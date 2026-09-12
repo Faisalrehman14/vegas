@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vegas Empire · Admin Control Suite</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #070b12;
+      --bg-2: #101a23;
+      --panel: rgba(16, 25, 35, 0.88);
+      --panel-strong: rgba(19, 30, 40, 0.96);
+      --panel-alt: rgba(12, 18, 25, 0.88);
+      --gold: #f5c65d;
+      --gold-2: #ffda7f;
+      --text: #eff6ff;
+      --muted: #a7b5c6;
+      --muted-2: #7d8ea3;
+      --line: rgba(245, 198, 93, 0.18);
+      --line-strong: rgba(245, 198, 93, 0.32);
+      --success: #5ce8a7;
+      --warning: #ffb95c;
+      --danger: #ff7d7d;
+      --shadow: 0 20px 60px rgba(2, 6, 14, 0.7);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, system-ui, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(245, 198, 93, 0.12), transparent 25%),
+        radial-gradient(circle at top right, rgba(92, 232, 167, 0.08), transparent 22%),
+        linear-gradient(180deg, var(--bg) 0%, #0b1320 100%);
+    }
+
+    a { color: inherit; text-decoration: none; }
+    img { max-width: 100%; display: block; }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 28px 22px 80px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 16px 18px;
+      margin-bottom: 30px;
+      border: 1px solid var(--line);
+      background: rgba(11, 18, 25, 0.72);
+      backdrop-filter: blur(12px);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 16px;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--text);
+    }
+
+    .mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 15px;
+      color: #111;
+      background: linear-gradient(135deg, var(--gold), #976b0e);
+      box-shadow: 0 10px 20px rgba(245, 198, 93, 0.28);
+    }
+
+    .brand small {
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      margin-left: 6px;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .nav a {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      transition: 0.2s ease;
+    }
+
+    .nav a:hover {
+      color: var(--text);
+      border-color: var(--line);
+      background: rgba(255,255,255,0.02);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 24px;
+      align-items: stretch;
+      margin-bottom: 24px;
+    }
+
+    .hero-copy,
+    .hero-panel,
+    .card,
+    .feature,
+    .stats-grid {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-copy {
+      padding: 38px clamp(20px, 3vw, 40px);
+      background:
+        linear-gradient(180deg, rgba(245,198,93,0.06), rgba(20,24,31,0.2) 30%),
+        var(--panel);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: rgba(245, 198, 93, 0.08);
+      border: 1px solid var(--line-strong);
+      color: var(--gold-2);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      font-family: "Playfair Display", serif;
+      font-size: clamp(2.5rem, 5vw, 4.6rem);
+      line-height: 0.96;
+      letter-spacing: -0.05em;
+      margin: 0 0 20px;
+    }
+
+    .lede {
+      color: var(--muted);
+      max-width: 62ch;
+      font-size: 1.03rem;
+      line-height: 1.8;
+      margin: 0 0 28px;
+    }
+
+    .cta-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 22px;
+    }
+
+    button.primary,
+    button.ghost {
+      appearance: none;
+      border: 0;
+      cursor: pointer;
+      font-weight: 700;
+      border-radius: 14px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+      font-size: 15px;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, var(--gold), #d79b18);
+      color: #101010;
+      padding: 14px 18px;
+      min-width: 180px;
+      box-shadow: 0 12px 26px rgba(245, 198, 93, 0.24);
+    }
+
+    button.ghost {
+      background: rgba(255,255,255,0.02);
+      color: var(--gold-2);
+      border: 1px solid var(--line-strong);
+      padding: 13px 18px;
+      min-width: 170px;
+    }
+
+    button.primary:hover,
+    button.ghost:hover {
+      transform: translateY(-1px);
+    }
+
+    .mini-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mini-meta span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.02);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 0 4px rgba(92, 232, 167, 0.15);
+    }
+
+    .hero-panel {
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      background:
+        linear-gradient(180deg, rgba(22,33,43,0.96), rgba(12,18,24,0.96));
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .panel-badge {
+      padding: 8px 10px;
+      border-radius: 999px;
+      color: var(--gold-2);
+      background: rgba(245,198,93,0.08);
+      border: 1px solid var(--line-strong);
+      font-weight: 700;
+    }
+
+    .panel-box {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .panel-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .panel-row strong {
+      font-size: 28px;
+      color: var(--text);
+      letter-spacing: -0.06em;
+    }
+
+    .meter {
+      height: 10px;
+      width: 100%;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+
+    .meter > span {
+      display: block;
+      height: 100%;
+      width: 72%;
+      background: linear-gradient(90deg, var(--gold), #e9ae3d);
+      border-radius: inherit;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin: 10px 0 24px;
+      padding: 18px;
+    }
+
+    .stat {
+      padding: 20px 18px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+    }
+
+    .stat .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted-2);
+      margin-bottom: 12px;
+    }
+
+    .stat .value {
+      font-size: clamp(1.7rem, 3vw, 2.3rem);
+      font-weight: 800;
+      letter-spacing: -0.06em;
+      color: var(--text);
+    }
+
+    .stat .sub {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .section-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 22px;
+      margin-bottom: 22px;
+    }
+
+    .card {
+      padding: 22px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 13px;
+      color: var(--gold-2);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .card h3 {
+      font-size: clamp(1.5rem, 2vw, 2.1rem);
+      margin: 0 0 14px;
+      letter-spacing: -0.05em;
+    }
+
+    .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .field { margin-top: 12px; }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 8px;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: rgba(7, 12, 18, 0.84);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 12px 13px;
+      font-size: 14px;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: var(--gold);
+      box-shadow: 0 0 0 4px rgba(245, 198, 93, 0.12);
+    }
+
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.02);
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 14px;
+    }
+
+    .checkbox input { width: auto; margin: 0; accent-color: var(--gold); }
+
+    .hint {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .preview {
+      margin-top: 16px;
+      min-height: 220px;
+      padding: 16px;
+      border-radius: 14px;
+      background: rgba(3, 7, 12, 0.8);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      overflow: auto;
+    }
+
+    .ok { color: var(--success); }
+    .warn { color: var(--warning); }
+
+    .steps {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 12px;
+    }
+
+    .steps li {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 14px 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.02);
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .steps li strong {
+      color: var(--text);
+    }
+
+    .num {
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: rgba(245,198,93,0.12);
+      color: var(--gold-2);
+      border: 1px solid var(--line-strong);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .feature {
+      padding: 18px 18px 20px;
+      background: rgba(255,255,255,0.02);
+    }
+
+    .feature .icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      background: rgba(245,198,93,0.1);
+      border: 1px solid var(--line-strong);
+      color: var(--gold-2);
+      font-size: 20px;
+      margin-bottom: 16px;
+    }
+
+    .feature h4 { margin: 0 0 8px; font-size: 18px; }
+    .feature p { margin: 0; color: var(--muted); line-height: 1.7; }
+
+    pre.hint-box {
+      margin-top: 16px;
+      white-space: pre-wrap;
+      background: rgba(3,7,12,0.8);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      color: var(--gold-2);
+      font-size: 12px;
+      line-height: 1.75;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow: auto;
+    }
+
+    .toast {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      background: rgba(10, 16, 22, 0.96);
+      color: var(--text);
+      border: 1px solid var(--line-strong);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 13px;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      z-index: 30;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 960px) {
+      .hero,
+      .section-grid { grid-template-columns: 1fr; }
+      .feature-grid,
+      .stats-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 620px) {
+      .topbar { padding: 12px 14px; }
+      .nav { display: none; }
+      .wrap { padding-left: 16px; padding-right: 16px; }
+      .row { grid-template-columns: 1fr; }
+      h1 { font-size: 2.7rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">VE</div>
+        <div>Vegas Empire <small>Admin Helper</small></div>
+      </div>
+      <nav class="nav">
+        <a href="#config">Configure</a>
+        <a href="#launch">Launch</a>
+        <a href="#visual">Visual Login</a>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">Enterprise automation</div>
+        <h1>Bulk player operations, reworked for speed and control.</h1>
+        <p class="lede">
+          Create player accounts, recharge users, and redeem balances with a clean admin workflow built for Vegas Empire. Designed for real-world operations with smarter safeguards, saved CSV backups, and reliable execution on the live admin panel.
+        </p>
+        <div class="cta-row">
+          <button class="primary" id="copyBtn" type="button">Copy admin launcher</button>
+          <button class="ghost" id="bookmarkBtn" type="button">Copy bookmarklet</button>
+        </div>
+        <div class="mini-meta">
+          <span><i class="dot"></i> Live admin ready</span>
+          <span>Creates, recharges, redeems</span>
+        </div>
+      </div>
+
+      <aside class="hero-panel">
+        <div class="panel-header">
+          <span>Operation status</span>
+          <span class="panel-badge">SAFE</span>
+        </div>
+        <div class="panel-box">
+          <div class="panel-row">
+            <span>Accounts generated</span>
+            <strong>1,280</strong>
+          </div>
+          <div class="meter"><span></span></div>
+          <div class="panel-row">
+            <span>Avg. batch time</span>
+            <strong>2.4m</strong>
+          </div>
+          <div class="panel-row">
+            <span>Recovery status</span>
+            <strong>Auto-save</strong>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="stats-grid">
+      <div class="stat">
+        <div class="label">Create flow</div>
+        <div class="value">Instant</div>
+        <div class="sub">Fast account generation with retry logic</div>
+      </div>
+      <div class="stat">
+        <div class="label">Recharge coverage</div>
+        <div class="value">Bulk</div>
+        <div class="sub">Custom amounts with saved CSV export</div>
+      </div>
+      <div class="stat">
+        <div class="label">Recovery</div>
+        <div class="value">Protected</div>
+        <div class="sub">Backup keeps your work safe during interruptions</div>
+      </div>
+    </section>
+
+    <div class="section-grid" id="config">
+      <section class="card">
+        <h2>01 · Configuration</h2>
+        <h3>Build the player batch</h3>
+        <div class="row">
+          <div class="field">
+            <label for="count">How many accounts</label>
+            <input id="count" type="number" min="1" max="1000" value="5" />
+          </div>
+          <div class="field">
+            <label for="balance">Balance each (0 = skip)</label>
+            <input id="balance" type="number" min="0" step="0.01" value="5" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="password">Shared password (min 6)</label>
+            <input id="password" type="text" value="Player123" />
+          </div>
+          <div class="field">
+            <label for="managerHint">Manager username</label>
+            <input id="managerHint" type="text" value="Sunny110" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="prefix">Username prefix (optional)</label>
+            <input id="prefix" type="text" maxlength="5" placeholder="e.g. ve" value="" />
+          </div>
+          <div class="field">
+            <label for="postfix">Username postfix (optional)</label>
+            <input id="postfix" type="text" maxlength="5" placeholder="e.g. vip" value="" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="digitLen">Digit length (3–6)</label>
+            <input id="digitLen" type="number" min="3" max="6" value="4" />
+          </div>
+          <div class="field"></div>
+        </div>
+
+        <label class="checkbox">
+          <input id="uniquePasswords" type="checkbox" />
+          <span>Unique password per account</span>
+        </label>
+
+        <p class="hint">Engine: crypto-random usernames, duplicate auto-retry, pause/stop, ETA, checkpoint CSV export, and saved backup recovery if power drops or the machine restarts.</p>
+
+        <button class="primary" id="previewBtn" type="button" style="margin-top:18px;">Preview generated names</button>
+        <div class="preview" id="preview">Click preview to see sample accounts.</div>
+      </section>
+
+      <section class="card" id="launch">
+        <h2>02 · Launch</h2>
+        <h3>Run the admin workflow</h3>
+        <ul class="steps">
+          <li><div class="num">1</div><div><strong>Open user management</strong><br />Stay logged in on app.vegasempire.co and keep the page active.</div></li>
+          <li><div class="num">2</div><div><strong>Copy the launcher</strong><br />Use the generated code below and paste it into the browser console.</div></li>
+          <li><div class="num">3</div><div><strong>Execute and monitor</strong><br />The bulk tool handles creation, recharge, and redeem actions with CSV checkpoints.</div></li>
+        </ul>
+        <button class="primary" id="copyBtn" type="button" style="margin-top:20px;">Copy admin launcher</button>
+        <button class="ghost" id="bookmarkBtn" type="button">Copy as bookmarklet</button>
+        <p class="warn" style="margin-top:14px; font-size:12px; color: var(--warning);">Admin tool: create / recharge / redeem list on app.vegasempire.co only.</p>
+      </section>
+    </div>
+
+    <section class="card" id="visual">
+      <h2>03 · Visual login</h2>
+      <h3>Open real login screen without console paste</h3>
+      <div class="row">
+        <div class="field">
+          <label for="gameUser">Username</label>
+          <input id="gameUser" type="text" placeholder="e.g. faisalbb" value="faisalbb" />
+        </div>
+        <div class="field">
+          <label for="gamePass">Password</label>
+          <input id="gamePass" type="text" placeholder="account password" value="" />
+        </div>
+      </div>
+      <p class="hint">Console paste nahi. Real mouse/keyboard se screen pe username → password → LOGIN.</p>
+      <pre id="visualCmd" class="hint-box"></pre>
+      <button class="primary" id="copyVisualBtn" type="button" style="margin-top:18px;">Copy visual-login command</button>
+    </section>
+
+    <section class="card" style="margin-top:22px;">
+      <h2>04 · Platform tools</h2>
+      <div class="feature-grid">
+        <div class="feature">
+          <div class="icon">⚡</div>
+          <h4>Account Creation</h4>
+          <p>Generate unique usernames with retry-safe logic for large-scale player batches.</p>
+        </div>
+        <div class="feature">
+          <div class="icon">💰</div>
+          <h4>Recharge Lists</h4>
+          <p>Apply fixed or per-user balances in bulk and export a clean CSV journal.</p>
+        </div>
+        <div class="feature">
+          <div class="icon">🧾</div>
+          <h4>Redeem Lists</h4>
+          <p>Process full-balance redeem flows without losing visibility into each result.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <script>
+    const FIRST = ["Liam","Noah","Oliver","Elijah","James","William","Benjamin","Lucas","Henry","Theodore","Jack","Levi","Alexander","Jackson","Mateo","Daniel","Michael","Mason","Sebastian","Ethan","Logan","Owen","Samuel","Jacob","Asher","Aiden","John","David","Joseph","Matthew","Leo","Wyatt","Carter","Julian","Luke","Grayson","Isaac","Jayden","Thea","Aria","Mia","Luna","Harper","Camila","Sofia","Scarlett","Chloe","Nora","Ellie","Hazel","Lily","Aurora","Violet","Nova","Ivy","Emilia","Stella","Zoe","Penelope","Riley","Layla","Eleanor","Madison","Grace","Kai","Nina","Omar","Zara","Felix","Iris","Miles","Quinn","Vera"];
+
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.add("show");
+      clearTimeout(showToast._timer);
+      showToast._timer = setTimeout(() => toast.classList.remove("show"), 2200);
+    }
+
+    function secureRand(n) {
+      const buf = new Uint32Array(1);
+      crypto.getRandomValues(buf);
+      return buf[0] % n;
+    }
+
+    function secureDigits(len) {
+      let out = "";
+      for (let i = 0; i < len; i++) out += String(secureRand(10));
+      return out;
+    }
+
+    function lettersOnly(s) { return String(s).replace(/[^A-Za-z]/g, ""); }
+    function alnum(s) { return String(s).replace(/[^a-zA-Z0-9]/g, ""); }
+
+    function makeAccount(used, cfg) {
+      const name = lettersOnly(FIRST[secureRand(FIRST.length)]);
+      const prefix = alnum(cfg.prefix || "").toLowerCase().slice(0, 5);
+      const digitLen = Math.min(6, Math.max(3, Number(cfg.digitLen) || 4));
+      let username, guard = 0;
+      do {
+        const room = 15 - digitLen - prefix.length;
+        const stem = name.toLowerCase().slice(0, Math.max(2, room));
+        username = (prefix + stem + secureDigits(digitLen)).slice(0, 15);
+        guard += 1;
+      } while (used.has(username) && guard < 60);
+      used.add(username);
+      return { name, username };
+    }
+
+    function currentConfig() {
+      return {
+        count: Math.min(1000, Math.max(1, Number(document.getElementById("count").value) || 1)),
+        password: document.getElementById("password").value.trim(),
+        managerHint: document.getElementById("managerHint").value.trim(),
+        balance: Math.max(0, Number(document.getElementById("balance").value) || 0),
+        prefix: document.getElementById("prefix").value.trim(),
+        postfix: document.getElementById("postfix").value.trim(),
+        digitLen: Math.min(6, Math.max(3, Number(document.getElementById("digitLen").value) || 4)),
+        uniquePasswords: document.getElementById("uniquePasswords").checked
+      };
+    }
+
+    document.getElementById("previewBtn").addEventListener("click", () => {
+      const cfg = currentConfig();
+      if (cfg.password.length < 6) {
+        document.getElementById("preview").textContent = "Password must be at least 6 characters.";
+        return;
+      }
+
+      const used = new Set();
+      const previewCount = Math.min(cfg.count, 40);
+      const rows = Array.from({ length: previewCount }, () => makeAccount(used, cfg)).map((a, i) =>
+        `${String(i + 1).padStart(2, "0")}.  ${a.name.padEnd(12)}  ${a.username}  +${cfg.balance}`
+      );
+      const more = cfg.count > previewCount ? `\n… +${cfg.count - previewCount} more` : "";
+      document.getElementById("preview").innerHTML =
+        `<span class="ok">${cfg.count} players · prefix ${cfg.prefix || "—"} · postfix ${cfg.postfix || "—"} · digits ${cfg.digitLen} · uniquePass ${cfg.uniquePasswords} · mgr ${cfg.managerHint}</span>\n\n` +
+        rows.join("\n") + more;
+    });
+
+    async function copy(text, label) {
+      await navigator.clipboard.writeText(text);
+      showToast(label);
+    }
+
+    async function fetchText(path) {
+      const res = await fetch(path + "?t=" + Date.now(), { cache: "no-store" });
+      if (!res.ok) throw new Error("Could not load " + path);
+      return await res.text();
+    }
+
+    document.getElementById("copyBtn").addEventListener("click", async () => {
+      try {
+        const cfg = currentConfig();
+        const tpl = await fetchText("./launcher.js");
+        await copy("window.__VE_BULK_CFG = " + JSON.stringify(cfg) + ";\n" + tpl, "Admin launcher copied. Paste on app.vegasempire.co console.");
+      } catch (e) {
+        showToast(e.message || e);
+      }
+    });
+
+    document.getElementById("bookmarkBtn").addEventListener("click", async () => {
+      try {
+        const cfg = currentConfig();
+        const tpl = await fetchText("./launcher.js");
+        const body = "window.__VE_BULK_CFG = " + JSON.stringify(cfg) + ";\n" + tpl;
+        await copy("javascript:" + encodeURIComponent(body), "Bookmarklet copied.");
+      } catch (e) {
+        showToast(e.message || e);
+      }
+    });
+
+    function updateVisualCmd() {
+      const u = document.getElementById("gameUser").value.trim() || "USERNAME";
+      const p = document.getElementById("gamePass").value || "PASSWORD";
+      const cmd = `cd "/home/fiasal/Downloads/vegas empire" && .venv/bin/python visual-login.py ${JSON.stringify(u)} ${JSON.stringify(p)} --launch`;
+      const el = document.getElementById("visualCmd");
+      if (el) el.textContent = cmd;
+    }
+
+    document.getElementById("gameUser").addEventListener("input", updateVisualCmd);
+    document.getElementById("gamePass").addEventListener("input", updateVisualCmd);
+    updateVisualCmd();
+
+    document.getElementById("copyVisualBtn").addEventListener("click", async () => {
+      const u = document.getElementById("gameUser").value.trim();
+      const p = document.getElementById("gamePass").value;
+      if (!u || !p) {
+        showToast("Username aur password dono likho.");
+        return;
+      }
+      const cmd = `cd "/home/fiasal/Downloads/vegas empire" && .venv/bin/python visual-login.py ${JSON.stringify(u)} ${JSON.stringify(p)} --launch`;
+      try {
+        await copy(cmd, "Visual login command copied. Terminal mein paste karke Enter.");
+      } catch (e) {
+        showToast(e.message || e);
+      }
+    });
+  </script>
+</body>
+</html>
