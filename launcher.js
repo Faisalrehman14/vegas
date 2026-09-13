@@ -535,7 +535,7 @@
   }
 
   function downloadRedeemSheet(rows) {
-    const header = ["#", "Username", "Redeemed", "Status", "At"];
+    const header = ["#", "Username", "Redeemed", "Recharged", "Recharge Status", "Status", "At"];
     const lines = [header.join(",")];
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     rows.forEach((a, i) => {
@@ -543,6 +543,8 @@
         i + 1,
         a.username,
         a.redeemed || 0,
+        a.recharged || 0,
+        a.rechargeStatus || "not-needed",
         a.skipped ? "skipped" : (a.error || "ok"),
         a.at || stamp
       ].map((v) => `"${String(v).replace(/"/g, '""')}"`);
@@ -747,6 +749,14 @@
         <div id="ve-pane-redeem" class="ve-pane">
           <label>Usernames (one per line)</label>
           <textarea id="ve-bulk-users" placeholder="asher205&#10;madison919&#10;lucas275"></textarea>
+          <label class="ve-check"><input id="ve-bulk-auto-recharge" type="checkbox" /> Auto recharge after each successful redeem</label>
+          <div id="ve-bulk-row" style="margin-top:8px">
+            <div>
+              <label>Recharge amount</label>
+              <input id="ve-bulk-recharge-after-amount" type="number" min="1" step="0.01" value="5" />
+            </div>
+            <div></div>
+          </div>
           <button id="ve-bulk-redeem">Redeem full balance</button>
         </div>
         <div id="ve-bulk-log">Ready.</div>
@@ -1117,10 +1127,30 @@
     document.getElementById("ve-bulk-redeem").onclick = async () => {
       const btn = document.getElementById("ve-bulk-redeem");
       const users = parseUsernameList(document.getElementById("ve-bulk-users").value);
+      const autoRechargeEnabled = document.getElementById("ve-bulk-auto-recharge").checked;
+      let autoRechargeAmount = Math.max(0, Number(document.getElementById("ve-bulk-recharge-after-amount").value) || 0);
+
       if (!users.length) {
         log("Paste usernames first (one per line).");
         return;
       }
+
+      if (autoRechargeEnabled && autoRechargeAmount <= 0) {
+        const prompted = window.prompt("Kitna recharge karna hai har successful redeem ke baad?", "5");
+        if (prompted === null) {
+          log("Auto recharge cancelled.");
+          document.getElementById("ve-bulk-auto-recharge").checked = false;
+          return;
+        }
+        autoRechargeAmount = Math.max(0, Number(prompted) || 0);
+        if (autoRechargeAmount <= 0) {
+          log("Auto recharge amount invalid. Recharge disabled.");
+          document.getElementById("ve-bulk-auto-recharge").checked = false;
+          return;
+        }
+        document.getElementById("ve-bulk-recharge-after-amount").value = String(autoRechargeAmount);
+      }
+
       btn.disabled = true;
       sheetBtn.disabled = true;
       const results = [];
@@ -1131,11 +1161,31 @@
           try {
             const r = await redeemOne(username, log);
             r.at = new Date().toLocaleString();
+
+            if (autoRechargeEnabled && !r.skipped && Number(r.redeemed) > 0) {
+              try {
+                await rechargeOne(username, autoRechargeAmount, log);
+                r.recharged = autoRechargeAmount;
+                r.rechargeStatus = "ok";
+                log(username + " auto-recharged +" + autoRechargeAmount);
+              } catch (rechargeErr) {
+                r.recharged = 0;
+                r.rechargeStatus = "failed";
+                r.rechargeError = (rechargeErr && rechargeErr.message) || String(rechargeErr);
+                log("Auto recharge failed for " + username + ": " + r.rechargeError);
+              }
+            } else {
+              r.recharged = 0;
+              r.rechargeStatus = "not-needed";
+            }
+
             results.push(r);
           } catch (err) {
             results.push({
               username,
               redeemed: 0,
+              recharged: 0,
+              rechargeStatus: "not-needed",
               skipped: false,
               error: (err && err.message) || String(err),
               at: new Date().toLocaleString()
@@ -1147,7 +1197,8 @@
           sheetBtn.disabled = false;
         }
         const total = results.reduce((s, r) => s + (Number(r.redeemed) || 0), 0);
-        log("Done. Redeemed total " + total + " from " + results.length + " users.");
+        const rechargedTotal = results.reduce((s, r) => s + (Number(r.recharged) || 0), 0);
+        log("Done. Redeemed total " + total + " from " + results.length + " users. Auto recharged " + rechargedTotal + ".");
         downloadRedeemSheet(results);
         log("Sheet downloaded: vegas-redeems-*.csv");
         console.table(results);
