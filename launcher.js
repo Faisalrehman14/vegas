@@ -61,11 +61,39 @@
 
   function setInput(el, value) {
     if (!el) throw new Error("Missing form field");
+    const str = String(value);
     const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+    el.scrollIntoView({ block: "center", inline: "nearest" });
     el.focus();
-    proto.set.call(el, value);
+    el.click();
+    // Clear then set so React controlled inputs revalidate.
+    proto.set.call(el, "");
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+    proto.set.call(el, str);
+    try {
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, data: str, inputType: "insertText" }));
+    } catch (_err) {
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.blur();
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+  }
+
+  function buttonLabel(b) {
+    return ((b && (b.innerText || b.textContent)) || "").replace(/\s+/g, " ").trim();
+  }
+
+  function isButtonDisabled(b) {
+    if (!b) return true;
+    return Boolean(
+      b.disabled ||
+      b.getAttribute("disabled") != null ||
+      b.getAttribute("aria-disabled") === "true" ||
+      b.classList.contains("Mui-disabled")
+    );
   }
 
   /** Collision-resistant username factory (max 15 chars to match admin UI). */
@@ -155,12 +183,139 @@
     return (el && el.innerText) || "";
   }
 
+  function isVisible(el) {
+    if (!el || !el.getClientRects) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+    return el.getClientRects().length > 0;
+  }
+
   function dismissOpenDialogs() {
-    const cancel = [...document.querySelectorAll("button")].find((b) => {
+    const cancels = [...document.querySelectorAll(".MuiDialog-root button, .MuiModal-root button, button")].filter((b) => {
       if (b.closest("#ve-bulk-root")) return false;
+      if (!isVisible(b)) return false;
       return /^cancel$/i.test((b.textContent || "").trim());
     });
-    if (cancel) cancel.click();
+    cancels.forEach((b) => b.click());
+  }
+
+  function pressEscape() {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true }));
+  }
+
+  async function escapeUi() {
+    pressEscape();
+    await sleep(120);
+    dismissOpenDialogs();
+    await sleep(180);
+    pressEscape();
+    await sleep(120);
+  }
+
+  function findActiveDialog(titleRe) {
+    const roots = [...document.querySelectorAll(".MuiDialog-root, .MuiModal-root, [role='dialog']")].filter(isVisible);
+    const byTitle = roots.find((root) => {
+      const title = root.querySelector("h1,h2,[role='heading'],.MuiDialogTitle-root");
+      return title && titleRe.test(title.textContent || "");
+    });
+    if (byTitle) return byTitle;
+    return roots.find((root) => titleRe.test(root.innerText || "") && findDialogAmountInput(root)) || null;
+  }
+
+  function findMoneyDialog(kind) {
+    const loose = kind === "redeem" ? /redeem/i : /recharge/i;
+    const strict = kind === "redeem" ? /redeem\s*user/i : /recharge\s*user/i;
+    return (
+      findActiveDialog(strict) ||
+      findActiveDialog(loose) ||
+      [...document.querySelectorAll(".MuiDialog-root, .MuiModal-root, [role='dialog']")]
+        .filter(isVisible)
+        .find((root) => loose.test(root.innerText || "") && findDialogAmountInput(root)) ||
+      null
+    );
+  }
+
+  function findDialogAmountInput(dialog) {
+    if (!dialog) return null;
+    return (
+      dialog.querySelector("input#amount") ||
+      dialog.querySelector('input[name="amount"]') ||
+      dialog.querySelector('input[type="number"]') ||
+      [...dialog.querySelectorAll("input")].find((el) => {
+        if (el.type === "hidden") return false;
+        return /amount/i.test((el.id || "") + (el.name || "") + (el.getAttribute("aria-label") || "") + (el.placeholder || ""));
+      }) ||
+      [...dialog.querySelectorAll("input:not([type='hidden']):not([type='checkbox']):not([type='radio'])")].find((el) => isVisible(el)) ||
+      null
+    );
+  }
+
+  function findDialogConfirm(dialog, { allowDisabled = false } = {}) {
+    const roots = dialog
+      ? [dialog]
+      : [...document.querySelectorAll(".MuiDialog-root, .MuiModal-root, [role='dialog']")].filter(isVisible);
+    const scope = roots.flatMap((root) => {
+      const actions = root.querySelector(".MuiDialogActions-root, .MuiDialog-actions, [class*='DialogActions']");
+      const buttons = [...(actions || root).querySelectorAll("button, [role='button']")];
+      return buttons.length ? buttons : [...root.querySelectorAll("button, [role='button']")];
+    });
+
+    const matches = scope.filter((b) => {
+      if (b.closest("#ve-bulk-root")) return false;
+      if (!allowDisabled && !isVisible(b)) return false;
+      const label = buttonLabel(b);
+      return /^(confirm|submit|save|ok)$/i.test(label) || /^confirm\b/i.test(label);
+    });
+
+    const enabled = matches.find((b) => !isButtonDisabled(b));
+    if (enabled) return enabled;
+
+    // Fallback: primary contained button in actions (not Cancel)
+    const primary = scope.find((b) => {
+      if (b.closest("#ve-bulk-root")) return false;
+      if (!allowDisabled && !isVisible(b)) return false;
+      if (!allowDisabled && isButtonDisabled(b)) return false;
+      const label = buttonLabel(b);
+      if (/^cancel$/i.test(label)) return false;
+      return (
+        b.classList.contains("MuiButton-contained") ||
+        b.classList.contains("MuiButton-containedPrimary") ||
+        /MuiButton-contained/i.test(b.className || "")
+      );
+    });
+    if (primary) return primary;
+
+    if (allowDisabled) return matches[0] || null;
+    return null;
+  }
+
+  async function waitForConfirm(dialog, log, label = "Confirm") {
+    try {
+      return await waitFor(() => {
+        const live = (dialog && document.contains(dialog) && findDialogConfirm(dialog))
+          ? dialog
+          : (findMoneyDialog("recharge") || findMoneyDialog("redeem") || dialog);
+        return findDialogConfirm(live, { allowDisabled: false });
+      }, 10000, label + " button");
+    } catch (err) {
+      const live = findMoneyDialog("recharge") || findMoneyDialog("redeem") || dialog;
+      const disabled = findDialogConfirm(live, { allowDisabled: true });
+      const labels = live
+        ? [...live.querySelectorAll("button")].map(buttonLabel).filter(Boolean).join(" | ")
+        : "(no dialog)";
+      if (disabled) {
+        log(label + " still disabled. Dialog buttons: " + labels);
+        throw new Error(label + " disabled — amount may not be accepted (check admin balance)");
+      }
+      log(label + " missing. Dialog buttons: " + labels);
+      throw new Error(label + " missing");
+    }
+  }
+
+  function dialogErrorText(dialog) {
+    const text = ((dialog && dialog.innerText) || visibleText(pageRoot()) || "");
+    return text;
   }
 
   async function openCreate() {
@@ -254,217 +409,336 @@
     await sleep(700);
   }
 
+  function rowMatchesUsername(row, username) {
+    const want = String(username).trim().toLowerCase();
+    if (!want) return false;
+    const cells = [...row.querySelectorAll("td, [role='cell']")];
+    if (cells.some((c) => (c.textContent || "").trim().toLowerCase() === want)) return true;
+    const text = (row.innerText || "").toLowerCase().replace(/\s+/g, " ");
+    const re = new RegExp("(^|[^a-z0-9_])" + want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "([^a-z0-9_]|$)", "i");
+    return re.test(text);
+  }
+
   function findRowForUsername(username) {
-    const rows = [...document.querySelectorAll("tr, [role='row']")];
-    return rows.find((row) => {
+    const rows = [...document.querySelectorAll("tbody tr, tr, [role='row']")].filter((row) => {
       if (row.closest("#ve-bulk-root")) return false;
-      const t = (row.innerText || "").toLowerCase();
-      return t.includes(String(username).toLowerCase()) && /player/i.test(t);
-    }) || rows.find((row) => {
-      if (row.closest("#ve-bulk-root")) return false;
-      return (row.innerText || "").toLowerCase().includes(String(username).toLowerCase());
+      if (row.querySelector("th")) return false;
+      return isVisible(row) || row.getClientRects().length > 0;
     });
+    const exactPlayer = rows.find((row) => rowMatchesUsername(row, username) && /player/i.test(row.innerText || ""));
+    if (exactPlayer) return exactPlayer;
+    return rows.find((row) => rowMatchesUsername(row, username)) || null;
+  }
+
+  function findSearchBox() {
+    return (
+      [...document.querySelectorAll("input")].find((el) => {
+        if (el.closest("#ve-bulk-root")) return false;
+        if (!isVisible(el)) return false;
+        return /enter value/i.test(el.placeholder || "");
+      }) ||
+      document.querySelector("input[placeholder='Enter value']") ||
+      [...document.querySelectorAll("input[type='search'], input[type='text']")].find((el) => {
+        if (el.closest("#ve-bulk-root, nav, .MuiDrawer-root")) return false;
+        return isVisible(el) && /search|username|user/i.test((el.placeholder || "") + (el.getAttribute("aria-label") || "") + (el.id || ""));
+      }) ||
+      null
+    );
   }
 
   async function searchUser(username, log) {
     log("searching " + username + " ...");
+    await escapeUi();
+
     const clearBtn = [...document.querySelectorAll("button")].find((b) => {
       if (b.closest("#ve-bulk-root")) return false;
+      if (!isVisible(b)) return false;
       return /^clear$/i.test((b.textContent || "").trim());
     });
     if (clearBtn) {
       clearBtn.click();
-      await sleep(500);
+      await sleep(550);
     }
-    const searchBox =
-      [...document.querySelectorAll("input")].find((el) => {
-        if (el.closest("#ve-bulk-root")) return false;
-        return /enter value/i.test(el.placeholder || "");
-      }) || document.querySelector("input[placeholder='Enter value']");
-    if (!searchBox) throw new Error("Search box not found");
-    setInput(searchBox, username);
-    await sleep(150);
-    const searchBtn = [...document.querySelectorAll("button")].find((b) => {
-      if (b.closest("#ve-bulk-root")) return false;
-      return /^search$/i.test((b.textContent || "").trim());
-    });
-    if (!searchBtn) throw new Error("Search button not found");
-    searchBtn.click();
-    await sleep(400);
-    await waitFor(() => findRowForUsername(username), 15000, "user row for " + username);
-    await sleep(400);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const searchBox = findSearchBox();
+      if (!searchBox) throw new Error("Search box not found");
+      searchBox.scrollIntoView({ block: "center", inline: "nearest" });
+      setInput(searchBox, username);
+      await sleep(180);
+      if ((searchBox.value || "").trim() !== String(username)) {
+        setInput(searchBox, username);
+        await sleep(150);
+      }
+
+      const searchBtn = [...document.querySelectorAll("button")].find((b) => {
+        if (b.closest("#ve-bulk-root")) return false;
+        if (!isVisible(b)) return false;
+        return /^search$/i.test((b.textContent || "").trim());
+      });
+      if (searchBtn) searchBtn.click();
+      else {
+        searchBox.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
+        searchBox.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
+      }
+
+      try {
+        const row = await waitFor(() => findRowForUsername(username), 10000, "user row for " + username);
+        row.scrollIntoView({ block: "center", inline: "nearest" });
+        await sleep(350);
+        return row;
+      } catch (err) {
+        if (attempt >= 2) throw err;
+        log("search retry " + (attempt + 2) + "/3 for " + username);
+        await escapeUi();
+        await sleep(500);
+      }
+    }
+    throw new Error("Row not found for " + username);
   }
 
   function findActionsMenuItem(label) {
     const re = new RegExp("^" + label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i");
-    const openMenus = [...document.querySelectorAll(".MuiPopover-root .MuiMenu-list, .MuiMenu-paper [role='menu'], [role='presentation'] [role='menu']")].filter((menu) => {
+    const openMenus = [...document.querySelectorAll(
+      ".MuiPopover-root .MuiMenu-list, .MuiMenu-paper [role='menu'], [role='presentation'] [role='menu'], .MuiMenu-list"
+    )].filter((menu) => {
       if (menu.closest("#ve-bulk-root, nav, .MuiDrawer-root")) return false;
-      const style = window.getComputedStyle(menu);
-      return style.display !== "none" && style.visibility !== "hidden" && menu.getClientRects().length > 0;
+      return isVisible(menu);
     });
-    const items = (openMenus.length ? openMenus : [])
-      .flatMap((menu) => [...menu.querySelectorAll('[role="menuitem"]')])
-      .filter((el) => !el.closest("nav, .MuiDrawer-root, #ve-bulk-root"));
+    const items = openMenus
+      .flatMap((menu) => [...menu.querySelectorAll('[role="menuitem"], li, button')])
+      .filter((el) => !el.closest("nav, .MuiDrawer-root, #ve-bulk-root") && isVisible(el));
     return items.find((el) => {
       const firstLine = (el.textContent || "").trim().split("\n")[0].trim();
       return re.test(firstLine);
-    });
+    }) || null;
   }
 
   function readBalanceFromRow(row) {
     if (!row) return 0;
+    const table = row.closest("table");
+    const headers = table
+      ? [...table.querySelectorAll("thead th, thead [role='columnheader'], [role='columnheader']")].map((h) =>
+          (h.textContent || "").trim().toLowerCase()
+        )
+      : [];
+    const cells = [...row.querySelectorAll("td, [role='cell']")];
+    const balIdx = headers.findIndex((h) => /^balance$|balance/.test(h) && !/recharge|redeem/.test(h));
+    if (balIdx >= 0 && cells[balIdx]) {
+      const raw = (cells[balIdx].textContent || "").trim().replace(/,/g, "");
+      const n = Number(raw.replace(/[^\d.-]/g, ""));
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+
     const text = (row.innerText || "").replace(/\s+/g, " ").trim();
-    const m = text.match(/Player\s+(\d+(?:\.\d+)?)/i) || text.match(/\b(\d+(?:\.\d+)?)\s+\d{1,2}\/\d{1,2}\/\d{2,4}/);
+    const m =
+      text.match(/Player\s+(\d+(?:\.\d+)?)/i) ||
+      text.match(/\b(\d+(?:\.\d+)?)\s+\d{1,2}\/\d{1,2}\/\d{2,4}/);
     if (m) return Number(m[1]) || 0;
+
     const nums = [...text.matchAll(/\b(\d+(?:\.\d+)?)\b/g)].map((x) => Number(x[1]));
-    const candidates = nums.filter((n) => n >= 0 && n < 1000000);
+    const candidates = nums.filter((n) => n >= 0 && n < 1000000 && !(n >= 1900 && n <= 2100));
     if (!candidates.length) return 0;
     return candidates.length >= 2 ? candidates[candidates.length - 2] : candidates[0];
   }
 
+  function findRowActionsButton(row) {
+    return (
+      [...row.querySelectorAll("button")].find((b) => /^actions$/i.test((b.textContent || "").trim())) ||
+      row.querySelector("#user-actions-button") ||
+      [...row.querySelectorAll("button")].find((b) => /action/i.test((b.getAttribute("aria-label") || "") + (b.id || ""))) ||
+      null
+    );
+  }
+
   async function openRowAction(username, actionLabel, log) {
-    await searchUser(username, log);
-    const row = findRowForUsername(username);
+    const row = await searchUser(username, log);
     if (!row) throw new Error("Row not found for " + username);
     const balance = readBalanceFromRow(row);
-    const actionsBtn =
-      [...row.querySelectorAll("button")].find((b) => /^actions$/i.test((b.textContent || "").trim())) ||
-      row.querySelector("#user-actions-button");
-    if (!actionsBtn) throw new Error("Actions button not found in row for " + username);
-    log("opening " + actionLabel + " for " + username + " (balance " + balance + ") ...");
-    actionsBtn.click();
-    await sleep(450);
-    const item = await waitFor(() => findActionsMenuItem(actionLabel), 10000, "Actions → " + actionLabel);
-    item.click();
-    await sleep(500);
-    return { row, balance };
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      pressEscape();
+      await sleep(150);
+      const freshRow = findRowForUsername(username) || row;
+      const actionsBtn = findRowActionsButton(freshRow);
+      if (!actionsBtn) throw new Error("Actions button not found in row for " + username);
+      log("opening " + actionLabel + " for " + username + " (balance " + balance + ") ...");
+      actionsBtn.scrollIntoView({ block: "center", inline: "nearest" });
+      actionsBtn.click();
+      await sleep(400);
+      try {
+        const item = await waitFor(() => findActionsMenuItem(actionLabel), 7000, "Actions → " + actionLabel);
+        item.click();
+        await sleep(450);
+        return { row: freshRow, balance };
+      } catch (err) {
+        if (attempt >= 2) throw err;
+        log("Actions menu retry " + (attempt + 2) + "/3");
+        await escapeUi();
+        await sleep(400);
+      }
+    }
+    throw new Error("Could not open Actions → " + actionLabel + " for " + username);
+  }
+
+  async function waitDialogResult(titleRe, successRe, errorRe, timeout = 22000) {
+    return waitFor(() => {
+      const dialog = findActiveDialog(titleRe);
+      const bodyText = dialogErrorText(dialog);
+      if (successRe.test(bodyText)) return "ok";
+      if (dialog && errorRe.test(bodyText)) return "err";
+      if (!dialog) return "ok";
+      return false;
+    }, timeout, "dialog to finish");
+  }
+
+  async function fillAmount(dialog, amt) {
+    const amountEl = await waitFor(
+      () => findDialogAmountInput(findMoneyDialog("recharge") || findMoneyDialog("redeem") || dialog),
+      8000,
+      "amount field"
+    );
+    amountEl.focus();
+    amountEl.click();
+    await sleep(80);
+    setInput(amountEl, String(amt));
+    await sleep(250);
+    if (String(amountEl.value || "").trim() !== String(amt)) {
+      setInput(amountEl, String(amt));
+      await sleep(200);
+    }
+    // Re-focus confirm area so MUI validators run.
+    amountEl.dispatchEvent(new Event("change", { bubbles: true }));
+    amountEl.blur();
+    await sleep(200);
+    return amountEl;
   }
 
   async function rechargeOne(username, amount, log) {
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) throw new Error("Invalid recharge amount for " + username);
+
     await openRowAction(username, "Recharge", log);
-    const amountEl = await waitFor(() => {
-      const headingOpen = [...document.querySelectorAll("h1,h2,[role='heading'],.MuiDialogTitle-root")].some((h) =>
-        /recharge user/i.test(h.textContent || "")
-      );
-      if (!headingOpen) return null;
-      return (
-        document.querySelector("input#amount") ||
-        document.querySelector('input[name="amount"]') ||
-        [...document.querySelectorAll(".MuiDialog-root input, .MuiModal-root input")].find((el) =>
-          /amount/i.test(el.id + el.name + (el.getAttribute("aria-label") || ""))
-        )
-      );
-    }, 15000, "Recharge User dialog");
-    setInput(amountEl, String(amount));
-    await sleep(250);
-    const confirm = [...document.querySelectorAll(".MuiDialog-root button, .MuiModal-root button")].find((b) =>
-      /^confirm$/i.test((b.textContent || "").trim())
-    ) || [...document.querySelectorAll("button")].find((b) => {
-      if (b.closest("#ve-bulk-root")) return false;
-      return /^confirm$/i.test((b.textContent || "").trim());
-    });
-    if (!confirm) throw new Error("Recharge Confirm missing");
+    const dialog = await waitFor(() => findMoneyDialog("recharge"), 15000, "Recharge User dialog");
+    await fillAmount(dialog, amt);
+
+    const liveDialog = findMoneyDialog("recharge") || dialog;
+    const confirm = await waitForConfirm(liveDialog, log, "Recharge Confirm");
     confirm.click();
-    await sleep(500);
-    await waitFor(() => {
-      const bodyText = visibleText(pageRoot());
-      const dialogOpen = [...document.querySelectorAll("h1,h2,[role='heading'],.MuiDialogTitle-root")].some((h) =>
-        /recharge user/i.test(h.textContent || "")
-      );
-      if (/recharged successfully/i.test(bodyText)) return true;
-      if (!dialogOpen) return true;
-      if (/cannot exceed|amount must|error/i.test(bodyText) && dialogOpen) return "err";
-      return false;
-    }, 20000, "recharge to finish");
-    const bodyText = visibleText(pageRoot());
-    const dialogOpen = [...document.querySelectorAll("h1,h2,[role='heading'],.MuiDialogTitle-root")].some((h) =>
-      /recharge user/i.test(h.textContent || "")
+    await sleep(450);
+
+    const result = await waitDialogResult(
+      /recharge/i,
+      /recharged successfully/i,
+      /cannot exceed|amount must|insufficient|error|failed|invalid/i,
+      22000
     );
-    if (dialogOpen && /cannot exceed|amount must|error/i.test(bodyText)) {
-      dismissOpenDialogs();
-      throw new Error("Recharge failed for " + username + " (check admin balance)");
+    const stillOpen = findMoneyDialog("recharge");
+    const bodyText = dialogErrorText(stillOpen);
+    if (result === "err" || (stillOpen && /cannot exceed|amount must|insufficient|error|failed|invalid/i.test(bodyText))) {
+      await escapeUi();
+      throw new Error("Recharge failed for " + username + " (check admin balance / amount)");
     }
-    log("✓ " + username + " recharged +" + amount);
-    await sleep(600);
+    log("✓ " + username + " recharged +" + amt);
+    await sleep(500);
+    return { username, amount: amt, status: "ok" };
   }
 
   async function redeemOne(username, log) {
-    await searchUser(username, log);
-    const row = findRowForUsername(username);
-    if (!row) throw new Error("Row not found for " + username);
-    let balance = readBalanceFromRow(row);
+    const row = await searchUser(username, log);
+    const balance = readBalanceFromRow(row);
     if (!balance || balance <= 0) {
       log(username + " skipped (balance 0)");
-      return { username, redeemed: 0, skipped: true };
+      return { username, redeemed: 0, skipped: true, reason: "balance-0" };
     }
-    const actionsBtn =
-      [...row.querySelectorAll("button")].find((b) => /^actions$/i.test((b.textContent || "").trim())) ||
-      row.querySelector("#user-actions-button");
-    if (!actionsBtn) throw new Error("Actions button not found in row for " + username);
-    log("opening Redeem for " + username + " (balance " + balance + ") ...");
-    actionsBtn.click();
-    await sleep(450);
-    const item = await waitFor(() => findActionsMenuItem("Redeem"), 10000, "Actions → Redeem");
-    item.click();
-    await sleep(500);
 
-    const amountEl = await waitFor(() => {
-      const headingOpen = [...document.querySelectorAll("h1,h2,[role='heading'],.MuiDialogTitle-root")].some((h) =>
-        /redeem user/i.test(h.textContent || "")
-      );
-      if (!headingOpen) return null;
-      return (
-        document.querySelector(".MuiDialog-root input#amount, .MuiModal-root input#amount") ||
-        document.querySelector(".MuiDialog-root input[name='amount'], .MuiModal-root input[name='amount']") ||
-        document.querySelector("input#amount") ||
-        document.querySelector('input[name="amount"]')
-      );
-    }, 15000, "Redeem User dialog");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      pressEscape();
+      await sleep(120);
+      const freshRow = findRowForUsername(username) || row;
+      const actionsBtn = findRowActionsButton(freshRow);
+      if (!actionsBtn) throw new Error("Actions button not found in row for " + username);
+      log("opening Redeem for " + username + " (balance " + balance + ") ...");
+      actionsBtn.scrollIntoView({ block: "center", inline: "nearest" });
+      actionsBtn.click();
+      await sleep(400);
+      try {
+        const item = await waitFor(() => findActionsMenuItem("Redeem"), 7000, "Actions → Redeem");
+        item.click();
+        await sleep(450);
+        break;
+      } catch (err) {
+        if (attempt >= 2) throw err;
+        log("Redeem menu retry " + (attempt + 2) + "/3");
+        await escapeUi();
+        await sleep(400);
+      }
+    }
 
+    const dialog = await waitFor(() => findMoneyDialog("redeem"), 15000, "Redeem User dialog");
+
+    const dialogText = (findMoneyDialog("redeem") || dialog).innerText || "";
     let redeemAmount = balance;
-    const dialogText = [...document.querySelectorAll(".MuiDialog-root, .MuiModal-root")]
-      .map((el) => el.innerText || "")
-      .join("\n");
-    const maxMatch = dialogText.match(/Maximum Amount Redeem:\s*(\d+(?:\.\d+)?)/i);
-    if (maxMatch) redeemAmount = Number(maxMatch[1]) || balance;
-    if (redeemAmount <= 0) {
-      dismissOpenDialogs();
+    const maxMatch =
+      dialogText.match(/Maximum Amount Redeem:\s*(\d+(?:\.\d+)?)/i) ||
+      dialogText.match(/Maximum(?:\s+Amount)?(?:\s+Redeem)?:\s*(\d+(?:\.\d+)?)/i) ||
+      dialogText.match(/Max(?:imum)?\s*:?\s*(\d+(?:\.\d+)?)/i);
+    if (maxMatch) redeemAmount = Number(maxMatch[1]);
+    if (!Number.isFinite(redeemAmount) || redeemAmount <= 0) {
+      await escapeUi();
       log(username + " skipped (max redeem 0)");
-      return { username, redeemed: 0, skipped: true };
+      return { username, redeemed: 0, skipped: true, reason: "max-0" };
     }
 
-    setInput(amountEl, String(redeemAmount));
-    await sleep(250);
-    const confirm = [...document.querySelectorAll(".MuiDialog-root button, .MuiModal-root button")].find((b) =>
-      /^confirm$/i.test((b.textContent || "").trim())
-    ) || [...document.querySelectorAll("button")].find((b) => {
-      if (b.closest("#ve-bulk-root")) return false;
-      return /^confirm$/i.test((b.textContent || "").trim());
-    });
-    if (!confirm) throw new Error("Redeem Confirm missing");
+    await fillAmount(dialog, redeemAmount);
+
+    const remarks =
+      (findMoneyDialog("redeem") || dialog).querySelector("input#remarks, input[name='remarks']");
+    if (remarks && (remarks.value || "").trim()) setInput(remarks, "");
+
+    const liveDialog = findMoneyDialog("redeem") || dialog;
+    const confirm = await waitForConfirm(liveDialog, log, "Redeem Confirm");
     confirm.click();
-    await sleep(500);
-    await waitFor(() => {
-      const bodyText = visibleText(pageRoot());
-      const dialogOpen = [...document.querySelectorAll("h1,h2,[role='heading'],.MuiDialogTitle-root")].some((h) =>
-        /redeem user/i.test(h.textContent || "")
-      );
-      if (/redeemed successfully/i.test(bodyText)) return true;
-      if (!dialogOpen) return true;
-      if (/cannot exceed|amount must|must be in lobby|error|playing/i.test(bodyText) && dialogOpen) return "err";
-      return false;
-    }, 20000, "redeem to finish");
-    const bodyText = visibleText(pageRoot());
-    const dialogOpen = [...document.querySelectorAll("h1,h2,[role='heading'],.MuiDialogTitle-root")].some((h) =>
-      /redeem user/i.test(h.textContent || "")
+    await sleep(450);
+
+    const result = await waitDialogResult(
+      /redeem/i,
+      /redeemed successfully/i,
+      /cannot exceed|amount must|must be in lobby|playing|error|failed|invalid|online/i,
+      22000
     );
-    if (dialogOpen && /cannot exceed|amount must|must be in lobby|error|playing/i.test(bodyText)) {
-      dismissOpenDialogs();
-      throw new Error("Redeem failed for " + username);
+    const stillOpen = findMoneyDialog("redeem");
+    const bodyText = dialogErrorText(stillOpen);
+    if (result === "err" || (stillOpen && /cannot exceed|amount must|must be in lobby|playing|error|failed|invalid|online/i.test(bodyText))) {
+      const reason = /lobby|playing|online/i.test(bodyText) ? "user busy / in game" : "redeem rejected";
+      await escapeUi();
+      throw new Error("Redeem failed for " + username + " (" + reason + ")");
     }
-    log(username + " redeemed -" + redeemAmount);
-    await sleep(700);
-    return { username, redeemed: redeemAmount, skipped: false };
+    log("✓ " + username + " redeemed -" + redeemAmount);
+    await sleep(550);
+    return { username, redeemed: redeemAmount, skipped: false, balanceBefore: balance };
+  }
+
+  async function withMoneyRetries(fn, label, log, maxRetries = 3) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          log(label + " retry " + (attempt + 1) + "/" + maxRetries);
+          await escapeUi();
+          await sleep(600 + attempt * 400);
+        }
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const msg = (err && err.message) || String(err);
+        if (/admin balance|insufficient|invalid recharge amount/i.test(msg) && !/timed out|not found|Actions|Confirm|Search/i.test(msg)) {
+          break;
+        }
+        await escapeUi();
+      }
+    }
+    throw lastErr || new Error(label + " failed");
   }
 
   function normalizeSheetName(name) {
@@ -685,7 +959,7 @@
       </style>
       <div id="ve-bulk-card">
         <h3>Vegas Admin Helper</h3>
-        <p>Production-grade create engine · pause / stop · unique usernames · checkpoint CSV.</p>
+        <p>Create · recharge · redeem · retries · pause/stop · checkpoint CSV.</p>
         <div id="ve-bulk-tabs">
           <button type="button" id="ve-tab-create" class="active">Create</button>
           <button type="button" id="ve-tab-recharge">Recharge list</button>
@@ -725,26 +999,21 @@
           <input id="ve-bulk-manager" type="text" value="${CFG.managerHint || ""}" />
           <label class="ve-check"><input id="ve-bulk-unique-pass" type="checkbox" ${CFG.uniquePasswords ? "checked" : ""} /> Unique password per account</label>
           <button id="ve-bulk-go">Start create job</button>
-          <div id="ve-job-row">
-            <button id="ve-bulk-pause" disabled>Pause</button>
-            <button id="ve-bulk-stop" disabled>Stop</button>
-          </div>
-          <div id="ve-progress-wrap">
-            <div id="ve-progress-bar"><div id="ve-progress-fill"></div></div>
-            <div id="ve-stats">Idle</div>
-          </div>
         </div>
         <div id="ve-pane-recharge" class="ve-pane">
-          <label>Recharge list (username, amount or username amount)</label>
+          <label>Recharge list (username, amount)</label>
           <textarea id="ve-bulk-recharge-users" placeholder="asher205, 250&#10;madison919 150&#10;lucas275: 75"></textarea>
           <div id="ve-bulk-row" style="margin-top:8px">
             <div>
               <label>Default amount</label>
               <input id="ve-bulk-recharge-amount" type="number" min="1" step="0.01" value="5" />
             </div>
-            <div></div>
+            <div>
+              <label>Retries each</label>
+              <input id="ve-bulk-money-retries" type="number" min="1" max="8" value="3" />
+            </div>
           </div>
-          <button id="ve-bulk-recharge">Recharge list</button>
+          <button id="ve-bulk-recharge">Start recharge job</button>
         </div>
         <div id="ve-pane-redeem" class="ve-pane">
           <label>Usernames (one per line)</label>
@@ -755,9 +1024,20 @@
               <label>Recharge amount</label>
               <input id="ve-bulk-recharge-after-amount" type="number" min="1" step="0.01" value="5" />
             </div>
-            <div></div>
+            <div>
+              <label>Retries each</label>
+              <input id="ve-bulk-redeem-retries" type="number" min="1" max="8" value="3" />
+            </div>
           </div>
-          <button id="ve-bulk-redeem">Redeem full balance</button>
+          <button id="ve-bulk-redeem">Start redeem job</button>
+        </div>
+        <div id="ve-job-row">
+          <button id="ve-bulk-pause" disabled>Pause</button>
+          <button id="ve-bulk-stop" disabled>Stop</button>
+        </div>
+        <div id="ve-progress-wrap">
+          <div id="ve-progress-bar"><div id="ve-progress-fill"></div></div>
+          <div id="ve-stats">Idle</div>
         </div>
         <div id="ve-bulk-log">Ready.</div>
         <button id="ve-bulk-sheet" disabled>Download sheet (CSV)</button>
@@ -810,13 +1090,18 @@
       CFG.uniquePasswords = document.getElementById("ve-bulk-unique-pass").checked;
     }
 
+    const rechargeBtn = document.getElementById("ve-bulk-recharge");
+    const redeemBtn = document.getElementById("ve-bulk-redeem");
+
     function setJobUi(state) {
       const running = state === "running" || state === "paused";
       goBtn.disabled = running;
+      rechargeBtn.disabled = running;
+      redeemBtn.disabled = running;
       pauseBtn.disabled = !running;
       stopBtn.disabled = !running;
       pauseBtn.textContent = state === "paused" ? "Resume" : "Pause";
-      progressWrap.classList.toggle("on", running || state === "done");
+      progressWrap.classList.toggle("on", running || state === "done" || state === "stopped");
     }
 
     function renderStats(stats) {
@@ -825,8 +1110,12 @@
       const eta = stats.avgMs && stats.remaining
         ? formatEta(stats.avgMs * stats.remaining)
         : "--:--";
+      const extra = stats.kind === "create"
+        ? stats.dups + " dup-retry"
+        : (stats.skipped || 0) + " skip";
       statsEl.textContent =
-        pct + "% · " + stats.ok + " ok · " + stats.fail + " fail · " + stats.dups + " dup-retry · ETA " + eta +
+        (stats.kind ? stats.kind + " · " : "") +
+        pct + "% · " + stats.ok + " ok · " + stats.fail + " fail · " + extra + " · ETA " + eta +
         (stats.state === "paused" ? " · PAUSED" : "") +
         (stats.state === "stopped" ? " · STOPPED" : "");
     }
@@ -874,6 +1163,7 @@
 
       job = {
         state: "running",
+        kind: "create",
         total: CFG.count,
         ok: 0,
         fail: 0,
@@ -900,7 +1190,12 @@
               account.balanceLoaded = 0;
               account.status = "created";
               if (CFG.balance > 0) {
-                await rechargeOne(account.username, CFG.balance, log);
+                await withMoneyRetries(
+                  () => rechargeOne(account.username, CFG.balance, log),
+                  "recharge " + account.username,
+                  log,
+                  CFG.maxRetries || 3
+                );
                 account.balanceLoaded = CFG.balance;
                 account.status = "created+recharged";
               }
@@ -945,6 +1240,7 @@
           job.done = i + 1;
           const avgMs = timings.reduce((a, b) => a + b, 0) / timings.length;
           renderStats({
+            kind: "create",
             total: job.total,
             done: job.done,
             ok: job.ok,
@@ -996,6 +1292,7 @@
         }
         setJobUi(job.state);
         renderStats({
+          kind: "create",
           total: job.total,
           done: job.done,
           ok: job.ok,
@@ -1007,6 +1304,8 @@
         });
       } finally {
         goBtn.disabled = false;
+        rechargeBtn.disabled = false;
+        redeemBtn.disabled = false;
         pauseBtn.disabled = true;
         stopBtn.disabled = true;
         pauseBtn.textContent = "Pause";
@@ -1048,11 +1347,13 @@
         pauseBtn.textContent = "Resume";
         log("Paused.");
         renderStats({
+          kind: job.kind || "create",
           total: job.total,
           done: job.done,
           ok: job.ok,
           fail: job.fail,
-          dups: job.dups,
+          dups: job.dups || 0,
+          skipped: job.skipped || 0,
           remaining: job.total - job.done,
           avgMs: 0,
           state: "paused"
@@ -1071,29 +1372,58 @@
     };
 
     document.getElementById("ve-bulk-recharge").onclick = async () => {
-      const btn = document.getElementById("ve-bulk-recharge");
+      if (job && (job.state === "running" || job.state === "paused")) {
+        log("Another job is running. Pause/Stop first.");
+        return;
+      }
       const defaultAmount = Math.max(0, Number(document.getElementById("ve-bulk-recharge-amount").value) || 0);
+      const retriesEl = document.getElementById("ve-bulk-money-retries");
+      const retries = Math.min(8, Math.max(1, Number(retriesEl && retriesEl.value) || 3));
       const entries = parseRechargeEntries(document.getElementById("ve-bulk-recharge-users").value, defaultAmount);
       if (!entries.length) {
         log("Paste usernames with amounts first, or use the default amount field.");
         return;
       }
-      btn.disabled = true;
-      sheetBtn.disabled = true;
+
       const results = [];
+      const timings = [];
+      const startedAt = Date.now();
+      job = {
+        state: "running",
+        kind: "recharge",
+        total: entries.length,
+        ok: 0,
+        fail: 0,
+        skipped: 0,
+        dups: 0,
+        done: 0
+      };
+      setJobUi("running");
+      sheetBtn.disabled = true;
+      log("Recharge job: " + entries.length + " users · retries=" + retries);
+
       try {
         for (let i = 0; i < entries.length; i++) {
+          await waitIfPaused();
           const { username, amount } = entries[i];
+          const tickStart = Date.now();
           log((i + 1) + "/" + entries.length + "  " + username + " → " + amount);
           try {
-            await rechargeOne(username, amount, log);
+            await withMoneyRetries(
+              () => rechargeOne(username, amount, log),
+              "recharge " + username,
+              log,
+              retries
+            );
             results.push({
               username,
               amount,
               status: "ok",
               at: new Date().toLocaleString()
             });
+            job.ok += 1;
           } catch (err) {
+            if (err && err.message === "__STOP__") throw err;
             results.push({
               username,
               amount,
@@ -1101,33 +1431,73 @@
               error: (err && err.message) || String(err),
               at: new Date().toLocaleString()
             });
+            job.fail += 1;
             log("Failed " + username + ": " + ((err && err.message) || err));
+            await escapeUi();
           }
+          timings.push(Date.now() - tickStart);
+          job.done = i + 1;
           lastRecharges = results.slice();
           sheetMode = "recharge";
           sheetBtn.disabled = false;
+          renderStats({
+            kind: "recharge",
+            total: job.total,
+            done: job.done,
+            ok: job.ok,
+            fail: job.fail,
+            skipped: job.skipped,
+            dups: 0,
+            remaining: job.total - job.done,
+            avgMs: timings.reduce((a, b) => a + b, 0) / timings.length,
+            state: job.state
+          });
+          if (results.length && results.length % 25 === 0) {
+            downloadRechargeSheet(results);
+            log("Checkpoint CSV · " + results.length + " recharges");
+          }
+          await sleep(280);
         }
-        const total = results.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-        log("Done. Recharged total " + total + " across " + results.length + " users.");
+        const okTotal = results.filter((r) => r.status === "ok").reduce((s, r) => s + (Number(r.amount) || 0), 0);
+        log("Done. Recharged " + okTotal + " · " + job.ok + " ok / " + job.fail + " fail · " + formatEta(Date.now() - startedAt));
         downloadRechargeSheet(results);
         log("Sheet downloaded: vegas-recharges-*.csv");
         console.table(results);
+        job.state = "done";
+        setJobUi("done");
       } catch (e) {
-        log("Stopped: " + (e && e.message ? e.message : e));
+        if (e && e.message === "__STOP__") {
+          log("Recharge stopped after " + job.ok + " successes.");
+          job.state = "stopped";
+        } else {
+          log("Recharge job error: " + ((e && e.message) || e));
+          job.state = "stopped";
+        }
         if (results.length) {
           lastRecharges = results.slice();
           sheetBtn.disabled = false;
           downloadRechargeSheet(results);
         }
+        setJobUi(job.state);
       } finally {
-        btn.disabled = false;
+        goBtn.disabled = false;
+        rechargeBtn.disabled = false;
+        redeemBtn.disabled = false;
+        pauseBtn.disabled = true;
+        stopBtn.disabled = true;
+        pauseBtn.textContent = "Pause";
       }
     };
 
     document.getElementById("ve-bulk-redeem").onclick = async () => {
-      const btn = document.getElementById("ve-bulk-redeem");
+      if (job && (job.state === "running" || job.state === "paused")) {
+        log("Another job is running. Pause/Stop first.");
+        return;
+      }
       const users = parseUsernameList(document.getElementById("ve-bulk-users").value);
       const autoRechargeEnabled = document.getElementById("ve-bulk-auto-recharge").checked;
+      const retriesEl = document.getElementById("ve-bulk-redeem-retries");
+      const retries = Math.min(8, Math.max(1, Number(retriesEl && retriesEl.value) || 3));
       let autoRechargeAmount = Math.max(0, Number(document.getElementById("ve-bulk-recharge-after-amount").value) || 0);
 
       if (!users.length) {
@@ -1151,36 +1521,72 @@
         document.getElementById("ve-bulk-recharge-after-amount").value = String(autoRechargeAmount);
       }
 
-      btn.disabled = true;
-      sheetBtn.disabled = true;
       const results = [];
+      const timings = [];
+      const startedAt = Date.now();
+      job = {
+        state: "running",
+        kind: "redeem",
+        total: users.length,
+        ok: 0,
+        fail: 0,
+        skipped: 0,
+        dups: 0,
+        done: 0
+      };
+      setJobUi("running");
+      sheetBtn.disabled = true;
+      log("Redeem job: " + users.length + " users · retries=" + retries +
+        (autoRechargeEnabled ? (" · auto-recharge +" + autoRechargeAmount) : ""));
+
       try {
         for (let i = 0; i < users.length; i++) {
+          await waitIfPaused();
           const username = users[i];
+          const tickStart = Date.now();
           log((i + 1) + "/" + users.length + "  " + username);
           try {
-            const r = await redeemOne(username, log);
+            const r = await withMoneyRetries(
+              () => redeemOne(username, log),
+              "redeem " + username,
+              log,
+              retries
+            );
             r.at = new Date().toLocaleString();
 
-            if (autoRechargeEnabled && !r.skipped && Number(r.redeemed) > 0) {
-              try {
-                await rechargeOne(username, autoRechargeAmount, log);
-                r.recharged = autoRechargeAmount;
-                r.rechargeStatus = "ok";
-                log(username + " auto-recharged +" + autoRechargeAmount);
-              } catch (rechargeErr) {
-                r.recharged = 0;
-                r.rechargeStatus = "failed";
-                r.rechargeError = (rechargeErr && rechargeErr.message) || String(rechargeErr);
-                log("Auto recharge failed for " + username + ": " + r.rechargeError);
-              }
-            } else {
+            if (r.skipped) {
+              job.skipped += 1;
               r.recharged = 0;
               r.rechargeStatus = "not-needed";
+            } else {
+              job.ok += 1;
+              if (autoRechargeEnabled && Number(r.redeemed) > 0) {
+                try {
+                  await withMoneyRetries(
+                    () => rechargeOne(username, autoRechargeAmount, log),
+                    "auto-recharge " + username,
+                    log,
+                    retries
+                  );
+                  r.recharged = autoRechargeAmount;
+                  r.rechargeStatus = "ok";
+                  log(username + " auto-recharged +" + autoRechargeAmount);
+                } catch (rechargeErr) {
+                  if (rechargeErr && rechargeErr.message === "__STOP__") throw rechargeErr;
+                  r.recharged = 0;
+                  r.rechargeStatus = "failed";
+                  r.rechargeError = (rechargeErr && rechargeErr.message) || String(rechargeErr);
+                  log("Auto recharge failed for " + username + ": " + r.rechargeError);
+                  await escapeUi();
+                }
+              } else {
+                r.recharged = 0;
+                r.rechargeStatus = "not-needed";
+              }
             }
-
             results.push(r);
           } catch (err) {
+            if (err && err.message === "__STOP__") throw err;
             results.push({
               username,
               redeemed: 0,
@@ -1190,27 +1596,63 @@
               error: (err && err.message) || String(err),
               at: new Date().toLocaleString()
             });
+            job.fail += 1;
             log("Failed " + username + ": " + ((err && err.message) || err));
+            await escapeUi();
           }
+          timings.push(Date.now() - tickStart);
+          job.done = i + 1;
           lastRedeems = results.slice();
           sheetMode = "redeem";
           sheetBtn.disabled = false;
+          renderStats({
+            kind: "redeem",
+            total: job.total,
+            done: job.done,
+            ok: job.ok,
+            fail: job.fail,
+            skipped: job.skipped,
+            dups: 0,
+            remaining: job.total - job.done,
+            avgMs: timings.reduce((a, b) => a + b, 0) / timings.length,
+            state: job.state
+          });
+          if (results.length && results.length % 25 === 0) {
+            downloadRedeemSheet(results);
+            log("Checkpoint CSV · " + results.length + " redeems");
+          }
+          await sleep(280);
         }
         const total = results.reduce((s, r) => s + (Number(r.redeemed) || 0), 0);
         const rechargedTotal = results.reduce((s, r) => s + (Number(r.recharged) || 0), 0);
-        log("Done. Redeemed total " + total + " from " + results.length + " users. Auto recharged " + rechargedTotal + ".");
+        log("Done. Redeemed " + total + " · auto-recharged " + rechargedTotal +
+          " · " + job.ok + " ok / " + job.skipped + " skip / " + job.fail + " fail · " + formatEta(Date.now() - startedAt));
         downloadRedeemSheet(results);
         log("Sheet downloaded: vegas-redeems-*.csv");
         console.table(results);
+        job.state = "done";
+        setJobUi("done");
       } catch (e) {
-        log("Stopped: " + (e && e.message ? e.message : e));
+        if (e && e.message === "__STOP__") {
+          log("Redeem stopped after " + job.ok + " successes.");
+          job.state = "stopped";
+        } else {
+          log("Redeem job error: " + ((e && e.message) || e));
+          job.state = "stopped";
+        }
         if (results.length) {
           lastRedeems = results.slice();
           sheetBtn.disabled = false;
           downloadRedeemSheet(results);
         }
+        setJobUi(job.state);
       } finally {
-        btn.disabled = false;
+        goBtn.disabled = false;
+        rechargeBtn.disabled = false;
+        redeemBtn.disabled = false;
+        pauseBtn.disabled = true;
+        stopBtn.disabled = true;
+        pauseBtn.textContent = "Pause";
       }
     };
   }
