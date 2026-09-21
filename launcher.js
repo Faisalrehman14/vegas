@@ -751,6 +751,405 @@
     return cleaned;
   }
 
+
+
+  function getUserTableHeaders() {
+    const table = [...document.querySelectorAll("table")].find((t) => {
+      if (t.closest("#ve-bulk-root")) return false;
+      return isVisible(t) && t.querySelector("tbody tr");
+    });
+    if (!table) return { table: null, headers: [] };
+    const headers = [...table.querySelectorAll("thead th")].map((h) =>
+      (h.textContent || "").trim().toLowerCase()
+    );
+    return { table, headers };
+  }
+
+  function readPaginationMeta() {
+    const root = document.querySelector(".MuiTablePagination-root") || pageRoot();
+    const text = ((root && root.innerText) || "") + "\n" + ((pageRoot() && pageRoot().innerText) || "");
+    const m = text.match(/(\d+)\s*[-–]\s*(\d+)\s+of\s+(\d+)/i);
+    if (!m) return { from: 0, to: 0, total: 0 };
+    return { from: Number(m[1]), to: Number(m[2]), total: Number(m[3]) };
+  }
+
+  function buildUsersHash(page, perPage) {
+    const params = new URLSearchParams();
+    params.set("displayedFilters", "{}");
+    params.set("filter", "{}");
+    params.set("order", "DESC");
+    params.set("page", String(page));
+    params.set("perPage", String(perPage));
+    params.set("sort", "createdAt");
+    return "#/users?" + params.toString();
+  }
+
+  function extractUsernameFromRow(row, headers) {
+    if (!row || row.closest("#ve-bulk-root")) return null;
+    const cells = [...row.querySelectorAll("td")];
+    if (!cells.length) return null;
+    const text = (row.innerText || "").replace(/\s+/g, " ").trim();
+    if (!text || /no rows|no data|no users/i.test(text)) return null;
+
+    const blocked = new Set([
+      "player", "manager", "admin", "agent", "actions", "active", "inactive", "yes", "no"
+    ]);
+    const mgr = String(CFG.managerHint || "").trim().toLowerCase();
+    if (mgr) blocked.add(mgr);
+
+    const userIdx = headers.findIndex((h) => h === "username" || h === "user name");
+    if (userIdx >= 0 && cells[userIdx]) {
+      const u = (cells[userIdx].textContent || "").trim();
+      if (/^[a-zA-Z][a-zA-Z0-9_]{2,24}$/.test(u) && !blocked.has(u.toLowerCase())) return u;
+    }
+
+    for (const cell of cells) {
+      const v = (cell.textContent || "").trim();
+      if (!/^[a-zA-Z][a-zA-Z0-9_]{2,24}$/.test(v)) continue;
+      if (blocked.has(v.toLowerCase())) continue;
+      if (v.includes("@")) continue;
+      return v;
+    }
+    return null;
+  }
+
+  function collectUsernamesFromCurrentPage(opts = {}) {
+    const playersOnly = opts.playersOnly !== false;
+    const { table, headers } = getUserTableHeaders();
+    if (!table) return [];
+    const out = [];
+    const seen = new Set();
+    [...table.querySelectorAll("tbody tr")].forEach((row) => {
+      if (!(isVisible(row) || row.getClientRects().length)) return;
+      const text = row.innerText || "";
+      if (playersOnly && !/player/i.test(text)) return;
+      const username = extractUsernameFromRow(row, headers);
+      if (!username) return;
+      const key = username.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(username);
+    });
+    return out;
+  }
+
+  function pageFingerprint() {
+    return collectUsernamesFromCurrentPage({ playersOnly: false }).join("|");
+  }
+
+  async function waitForUserPage(previousFp, timeout = 20000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const users = collectUsernamesFromCurrentPage({ playersOnly: false });
+      const fp = users.join("|");
+      const meta = readPaginationMeta();
+      if (users.length && (!previousFp || fp !== previousFp)) {
+        return { users, fp, meta };
+      }
+      await sleep(180);
+    }
+    const users = collectUsernamesFromCurrentPage({ playersOnly: false });
+    return { users, fp: users.join("|"), meta: readPaginationMeta() };
+  }
+
+  async function setItemsPerPage100(log) {
+    const before = pageFingerprint();
+    log("Items per page → 100 (URL)…");
+    location.hash = buildUsersHash(1, 100);
+    let loaded = await waitForUserPage(before, 18000);
+
+    // If still ~10 rows, try clicking the dropdown option 100
+    if (loaded.users.length > 0 && loaded.users.length <= 12) {
+      log("Still ~" + loaded.users.length + "/page — clicking Items per page = 100…");
+      pressEscape();
+      await sleep(200);
+      const pagination = document.querySelector(".MuiTablePagination-root");
+      const combo = pagination && (
+        pagination.querySelector("[role='combobox']") ||
+        pagination.querySelector(".MuiSelect-select") ||
+        pagination.querySelector(".MuiTablePagination-select")
+      );
+      if (combo) {
+        const beforeClick = pageFingerprint();
+        combo.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        combo.click();
+        await sleep(350);
+        const opt = [...document.querySelectorAll('[role="listbox"] [role="option"], [role="option"], li')].find((o) => {
+          const t = (o.textContent || "").trim();
+          return t === "100" || o.getAttribute("data-value") === "100";
+        });
+        if (opt) {
+          opt.click();
+          loaded = await waitForUserPage(beforeClick, 15000);
+        } else {
+          pressEscape();
+        }
+      }
+    }
+
+    const perPage = loaded.users.length >= 50 ? 100 : Math.max(loaded.users.length || 10, 10);
+    log("Page size ready: " + loaded.users.length + " usernames visible · total " + (loaded.meta.total || "?"));
+    return { perPage: perPage >= 80 ? 100 : perPage, loaded };
+  }
+
+  async function clearUserFilters(log) {
+    await escapeUi();
+    const clearBtn = [...document.querySelectorAll("button")].find((b) => {
+      if (b.closest("#ve-bulk-root")) return false;
+      if (!isVisible(b)) return false;
+      return /^clear$/i.test((b.textContent || "").trim());
+    });
+    if (clearBtn) {
+      clearBtn.click();
+      log("Filters cleared.");
+      await sleep(800);
+    }
+  }
+
+  async function harvestExistingUsernames(log, opts = {}) {
+    const playersOnly = opts.playersOnly !== false;
+    if (![...document.querySelectorAll("button")].some((b) => /add new user/i.test(b.textContent || ""))) {
+      throw new Error("User List page pe raho (Add New User button dikhna chahiye).");
+    }
+
+    log("Scan start: pehle 100/page, phir har page se Username column copy.");
+    await clearUserFilters(log);
+    const { perPage, loaded: first } = await setItemsPerPage100(log);
+
+    const found = [];
+    const seen = new Set();
+    let previousFp = "";
+    let total = first.meta.total || 0;
+    const maxPages = Math.max(1, Math.ceil((total || 5000) / Math.max(perPage, 1)) + 3);
+
+    for (let page = 1; page <= maxPages; page++) {
+      let meta = readPaginationMeta();
+      let pageUsers;
+
+      if (page === 1 && collectUsernamesFromCurrentPage({ playersOnly: false }).length) {
+        await sleep(200);
+        pageUsers = collectUsernamesFromCurrentPage({ playersOnly });
+        meta = readPaginationMeta();
+      } else {
+        const before = previousFp || pageFingerprint();
+        location.hash = buildUsersHash(page, perPage);
+        const loaded = await waitForUserPage(before, 20000);
+        await sleep(200);
+        pageUsers = collectUsernamesFromCurrentPage({ playersOnly });
+        meta = loaded.meta.total ? loaded.meta : readPaginationMeta();
+      }
+
+      if (meta.total) total = meta.total;
+      let added = 0;
+      pageUsers.forEach((u) => {
+        const key = u.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        found.push(u);
+        added += 1;
+      });
+      previousFp = pageUsers.join("|");
+
+      log(
+        "Page " + page + "/" + Math.ceil((total || 1) / perPage) +
+        ": +" + added + " · on-page " + pageUsers.length +
+        " · unique " + found.length + (total ? (" / " + total) : "")
+      );
+
+      if (total && found.length >= total) break;
+      if (meta.to && meta.total && meta.to >= meta.total) break;
+      if (page > 1 && pageUsers.length === 0) break;
+    }
+
+    if (!found.length) throw new Error("Koi username nahi mila. Username column / User List check karo.");
+    if (total && found.length < total * 0.9) {
+      log("Warning: sirf " + found.length + " mile, UI total " + total + " dikhata hai.");
+    }
+    log("Harvest complete: " + found.length + " usernames.");
+    return found;
+  }
+
+  const VAULT_KEY = "vegas-account-vaults-v1";
+
+  function loadVaultStore() {
+    try {
+      const data = JSON.parse(localStorage.getItem(VAULT_KEY) || "null");
+      if (!data || typeof data !== "object") return { version: 1, activeId: null, vaults: {} };
+      if (!data.vaults || typeof data.vaults !== "object") data.vaults = {};
+      return data;
+    } catch (_err) {
+      return { version: 1, activeId: null, vaults: {} };
+    }
+  }
+
+  function saveVaultStore(store) {
+    localStorage.setItem(VAULT_KEY, JSON.stringify(store));
+  }
+
+  function listEqual(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  function splitIntoHalves(usernames) {
+    const all = [...usernames];
+    const mid = Math.ceil(all.length / 2);
+    return { list1: all.slice(0, mid), list2: all.slice(mid) };
+  }
+
+  function vaultStats(vault) {
+    if (!vault) return null;
+    const c1 = Math.min(Number(vault.cursor1) || 0, (vault.list1 || []).length);
+    const c2 = Math.min(Number(vault.cursor2) || 0, (vault.list2 || []).length);
+    return {
+      total: (vault.all || []).length,
+      list1Size: (vault.list1 || []).length,
+      list2Size: (vault.list2 || []).length,
+      list1Done: c1,
+      list2Done: c2,
+      list1Left: Math.max(0, (vault.list1 || []).length - c1),
+      list2Left: Math.max(0, (vault.list2 || []).length - c2)
+    };
+  }
+
+  function getActiveVault() {
+    const store = loadVaultStore();
+    if (!store.activeId || !store.vaults[store.activeId]) return null;
+    return store.vaults[store.activeId];
+  }
+
+  function setActiveVault(id) {
+    const store = loadVaultStore();
+    if (!store.vaults[id]) return null;
+    store.activeId = id;
+    saveVaultStore(store);
+    return store.vaults[id];
+  }
+
+  function upsertVaultFromUsernames(usernames, opts = {}) {
+    const unique = [...new Set((usernames || []).map((u) => String(u || "").trim()).filter(Boolean))];
+    if (!unique.length) throw new Error("No usernames to build vault");
+    const halves = splitIntoHalves(unique);
+    const name = normalizeSheetName(opts.name || CFG.sheetName || "vegas-accounts");
+    const manager = String(opts.manager || CFG.managerHint || "manager").trim() || "manager";
+    const id = normalizeSheetName(manager + "-" + name);
+    const store = loadVaultStore();
+    const prev = store.vaults[id];
+    const keepCursor1 = prev && listEqual(prev.list1, halves.list1);
+    const keepCursor2 = prev && listEqual(prev.list2, halves.list2);
+    const vault = {
+      id,
+      name,
+      manager,
+      createdAt: (prev && prev.createdAt) || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      all: unique,
+      list1: halves.list1,
+      list2: halves.list2,
+      cursor1: keepCursor1 ? Math.min(Number(prev.cursor1) || 0, halves.list1.length) : 0,
+      cursor2: keepCursor2 ? Math.min(Number(prev.cursor2) || 0, halves.list2.length) : 0,
+      accounts: Array.isArray(opts.accounts) ? opts.accounts : (prev && prev.accounts) || []
+    };
+    store.vaults[id] = vault;
+    store.activeId = id;
+    saveVaultStore(store);
+    return vault;
+  }
+
+  function upsertVaultFromRows(rows, opts = {}) {
+    const accounts = Array.isArray(rows) ? rows : [];
+    const usernames = accounts.map((a) => a && a.username).filter(Boolean);
+    return upsertVaultFromUsernames(usernames, Object.assign({}, opts, { accounts }));
+  }
+
+  function advanceVaultCursor(vaultId, listNo, successCount) {
+    const store = loadVaultStore();
+    const vault = store.vaults[vaultId];
+    if (!vault) return null;
+    const n = Math.max(0, Number(successCount) || 0);
+    if (listNo === 2) {
+      vault.cursor2 = Math.min((vault.list2 || []).length, (Number(vault.cursor2) || 0) + n);
+    } else {
+      vault.cursor1 = Math.min((vault.list1 || []).length, (Number(vault.cursor1) || 0) + n);
+    }
+    vault.updatedAt = new Date().toISOString();
+    store.vaults[vaultId] = vault;
+    saveVaultStore(store);
+    return vault;
+  }
+
+  function resetVaultCursor(vaultId, listNo) {
+    const store = loadVaultStore();
+    const vault = store.vaults[vaultId];
+    if (!vault) return null;
+    if (listNo === 2) vault.cursor2 = 0;
+    else if (listNo === 1) vault.cursor1 = 0;
+    else {
+      vault.cursor1 = 0;
+      vault.cursor2 = 0;
+    }
+    vault.updatedAt = new Date().toISOString();
+    store.vaults[vaultId] = vault;
+    saveVaultStore(store);
+    return vault;
+  }
+
+  function planWalletAwareBatch(vault, listNo, amount, wallet) {
+    const amt = Number(amount);
+    const wal = Number(wallet);
+    if (!vault) throw new Error("No active vault");
+    if (![1, 2].includes(listNo)) throw new Error("List must be 1 or 2");
+    if (!Number.isFinite(amt) || amt <= 0) throw new Error("Amount per account must be > 0");
+    if (!Number.isFinite(wal) || wal < 0) throw new Error("Wallet balance invalid");
+
+    const list = listNo === 2 ? (vault.list2 || []) : (vault.list1 || []);
+    const cursorKey = listNo === 2 ? "cursor2" : "cursor1";
+    const cursor = Math.min(Number(vault[cursorKey]) || 0, list.length);
+    const pending = list.slice(cursor);
+    const capacity = Math.floor(wal / amt);
+    const take = Math.min(pending.length, Math.max(0, capacity));
+    const batch = pending.slice(0, take).map((username) => ({ username, amount: amt }));
+    return {
+      vaultId: vault.id,
+      listNo,
+      amount: amt,
+      wallet: wal,
+      capacity,
+      cursor,
+      listSize: list.length,
+      pendingCount: pending.length,
+      take,
+      batch,
+      spend: take * amt,
+      leftoverWallet: wal - take * amt,
+      remainingAfter: pending.length - take
+    };
+  }
+
+  function downloadListCsv(listName, usernames) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const lines = ["#,Username"].concat(
+      (usernames || []).map((u, i) => (i + 1) + "," + JSON.stringify(String(u)))
+    );
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${normalizeSheetName(listName)}-${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadVaultHalves(vault) {
+    if (!vault) return;
+    downloadListCsv(vault.name + "-list1", vault.list1 || []);
+    downloadListCsv(vault.name + "-list2", vault.list2 || []);
+  }
+
+
   function keepCreatedBackup(rows, fileName) {
     const safeName = normalizeSheetName(fileName || CFG.sheetName || "vegas-accounts");
     CFG.sheetName = safeName;
@@ -956,10 +1355,20 @@
         #ve-bulk-x { background:transparent; color:#f5c518; border:1px solid rgba(245,197,24,.28); }
         .ve-pane { display:none; }
         .ve-pane.active { display:block; }
+        #ve-vault-box { margin-top:8px; padding:8px; border:1px solid rgba(245,197,24,.22); border-radius:10px; background:#0e0e14; font:11px ui-monospace,monospace; color:#cfc8ba; line-height:1.45; }
+        #ve-vault-box strong { color:#f5c518; }
+        #ve-list-pick { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
+        #ve-list-pick button { border:1px solid rgba(245,197,24,.28); background:#14141c; color:#f4f1ea; border-radius:8px; padding:10px 8px; font-weight:700; cursor:pointer; font-size:12px; }
+        #ve-list-pick button.active { background:#f5c518; color:#111; }
+        #ve-bulk-smart, #ve-bulk-scan-users, #ve-bulk-rebuild-vault, #ve-bulk-reset-cursor, #ve-bulk-dl-lists { width:100%; border:0; border-radius:9px; padding:9px; font-weight:700; cursor:pointer; margin-top:7px; }
+        #ve-bulk-smart { background:#f5c518; color:#111; }
+        #ve-bulk-scan-users { background:#1a2a1a; color:#7dffb3; border:1px solid rgba(125,255,179,.35); }
+        #ve-bulk-rebuild-vault, #ve-bulk-reset-cursor, #ve-bulk-dl-lists { background:#1c1c28; color:#f5c518; border:1px solid rgba(245,197,24,.28); }
+        #ve-manual-wrap { margin-top:10px; border-top:1px dashed rgba(245,197,24,.18); padding-top:8px; }
       </style>
       <div id="ve-bulk-card">
         <h3>Vegas Admin Helper</h3>
-        <p>Create · recharge · redeem · retries · pause/stop · checkpoint CSV.</p>
+        <p>Create → auto-split List1/List2 · wallet-aware recharge · redeem.</p>
         <div id="ve-bulk-tabs">
           <button type="button" id="ve-tab-create" class="active">Create</button>
           <button type="button" id="ve-tab-recharge">Recharge list</button>
@@ -1001,19 +1410,38 @@
           <button id="ve-bulk-go">Start create job</button>
         </div>
         <div id="ve-pane-recharge" class="ve-pane">
-          <label>Recharge list (username, amount)</label>
-          <textarea id="ve-bulk-recharge-users" placeholder="asher205, 250&#10;madison919 150&#10;lucas275: 75"></textarea>
+          <div id="ve-vault-box">No vault yet. Scan existing accounts, create, or rebuild from saved sheet.</div>
+          <div id="ve-list-pick">
+            <button type="button" id="ve-pick-list1" class="active">List 1</button>
+            <button type="button" id="ve-pick-list2">List 2</button>
+          </div>
           <div id="ve-bulk-row" style="margin-top:8px">
             <div>
-              <label>Default amount</label>
-              <input id="ve-bulk-recharge-amount" type="number" min="1" step="0.01" value="5" />
+              <label>Your wallet balance</label>
+              <input id="ve-bulk-wallet" type="number" min="0" step="0.01" value="200" />
             </div>
+            <div>
+              <label>Amount each</label>
+              <input id="ve-bulk-recharge-amount" type="number" min="0.01" step="0.01" value="1" />
+            </div>
+          </div>
+          <div id="ve-bulk-row" style="margin-top:8px">
             <div>
               <label>Retries each</label>
               <input id="ve-bulk-money-retries" type="number" min="1" max="8" value="3" />
             </div>
+            <div></div>
           </div>
-          <button id="ve-bulk-recharge">Start recharge job</button>
+          <button id="ve-bulk-smart">Smart recharge (ask list 1/2)</button>
+          <button id="ve-bulk-scan-users" type="button">Scan existing accounts → build List 1/2</button>
+          <button id="ve-bulk-rebuild-vault" type="button">Rebuild vault from saved create sheet</button>
+          <button id="ve-bulk-dl-lists" type="button">Download list1 + list2 CSV</button>
+          <button id="ve-bulk-reset-cursor" type="button">Reset selected list cursor</button>
+          <div id="ve-manual-wrap">
+            <label>Manual paste (optional)</label>
+            <textarea id="ve-bulk-recharge-users" placeholder="asher205, 1&#10;madison919 1"></textarea>
+            <button id="ve-bulk-recharge">Manual recharge job</button>
+          </div>
         </div>
         <div id="ve-pane-redeem" class="ve-pane">
           <label>Usernames (one per line)</label>
@@ -1075,7 +1503,10 @@
       document.getElementById("ve-pane-redeem").classList.toggle("active", tab === "redeem");
       sheetMode = tab;
       if (tab === "create") sheetBtn.disabled = !lastCreated.length;
-      else if (tab === "recharge") sheetBtn.disabled = !lastRecharges.length;
+      else if (tab === "recharge") {
+        sheetBtn.disabled = !lastRecharges.length;
+        if (typeof refreshVaultUi === "function") refreshVaultUi();
+      }
       else sheetBtn.disabled = !lastRedeems.length;
     };
 
@@ -1092,11 +1523,168 @@
 
     const rechargeBtn = document.getElementById("ve-bulk-recharge");
     const redeemBtn = document.getElementById("ve-bulk-redeem");
+    const smartBtn = document.getElementById("ve-bulk-smart");
+    let selectedListNo = 1;
+
+    function refreshVaultUi() {
+      const box = document.getElementById("ve-vault-box");
+      if (!box) return;
+      const vault = getActiveVault();
+      if (!vault) {
+        box.innerHTML = "No vault yet. Create accounts or <em>Rebuild from saved create sheet</em>.";
+        return;
+      }
+      const st = vaultStats(vault);
+      box.innerHTML =
+        "<strong>" + vault.id + "</strong><br>" +
+        "Total <strong>" + st.total + "</strong> · List1 <strong>" + st.list1Size + "</strong> (left " + st.list1Left + ") · List2 <strong>" + st.list2Size + "</strong> (left " + st.list2Left + ")<br>" +
+        "Cursor L1 #" + (st.list1Done + 1) + " · L2 #" + (st.list2Done + 1) + " · mgr " + (vault.manager || "—");
+      document.getElementById("ve-pick-list1").classList.toggle("active", selectedListNo === 1);
+      document.getElementById("ve-pick-list2").classList.toggle("active", selectedListNo === 2);
+    }
+
+    document.getElementById("ve-pick-list1").onclick = () => { selectedListNo = 1; refreshVaultUi(); };
+    document.getElementById("ve-pick-list2").onclick = () => { selectedListNo = 2; refreshVaultUi(); };
+
+    document.getElementById("ve-bulk-scan-users").onclick = async () => {
+      if (job && (job.state === "running" || job.state === "paused")) {
+        log("Another job is running. Pause/Stop first.");
+        return;
+      }
+      const scanBtn = document.getElementById("ve-bulk-scan-users");
+      const manager = (document.getElementById("ve-bulk-manager") && document.getElementById("ve-bulk-manager").value.trim()) || CFG.managerHint || "manager";
+      const ok = window.confirm(
+        "User List se saari existing Player usernames scan karni hain?\\n" +
+        "Pehle app.vegasempire.co → Users page khula rakho.\\n" +
+        "Phir auto List1/List2 ban jayegi."
+      );
+      if (!ok) return;
+
+      scanBtn.disabled = true;
+      goBtn.disabled = true;
+      rechargeBtn.disabled = true;
+      if (smartBtn) smartBtn.disabled = true;
+      redeemBtn.disabled = true;
+      job = { state: "running", kind: "scan", total: 1, ok: 0, fail: 0, skipped: 0, dups: 0, done: 0 };
+      setJobUi("running");
+      progressWrap.classList.add("on");
+      statsEl.textContent = "Scanning User List…";
+
+      try {
+        const usernames = await harvestExistingUsernames(log, { playersOnly: true, maxPages: 400 });
+        const vaultName = window.prompt("Vault/file name?", "existing-" + manager) || ("existing-" + manager);
+        const vault = upsertVaultFromUsernames(usernames, {
+          name: vaultName,
+          manager,
+          accounts: usernames.map((username) => ({ username, name: username, status: "harvested" }))
+        });
+        // Also mirror into created backup so rebuild works later
+        keepCreatedBackup(
+          usernames.map((username) => ({ username, name: username, status: "harvested", createdAt: new Date().toLocaleString() })),
+          vault.name
+        );
+        lastCreated = usernames.map((username) => ({ username, name: username, status: "harvested" }));
+        sheetBtn.disabled = false;
+        sheetMode = "create";
+        const st = vaultStats(vault);
+        downloadListCsv(vault.name + "-ALL", usernames);
+        downloadVaultHalves(vault);
+        refreshVaultUi();
+        log("Vault ready: " + vault.id + " · " + st.total + " → L1 " + st.list1Size + " / L2 " + st.list2Size);
+        log("Downloaded ALL + list1 + list2 CSV.");
+        alert("Scan done: " + st.total + " usernames\\nList1: " + st.list1Size + "\\nList2: " + st.list2Size);
+        job.state = "done";
+        job.ok = st.total;
+        setJobUi("done");
+        renderStats({
+          kind: "scan",
+          total: st.total,
+          done: st.total,
+          ok: st.total,
+          fail: 0,
+          skipped: 0,
+          dups: 0,
+          remaining: 0,
+          avgMs: 0,
+          state: "done"
+        });
+      } catch (err) {
+        log("Scan failed: " + ((err && err.message) || err));
+        job.state = "stopped";
+        setJobUi("stopped");
+      } finally {
+        scanBtn.disabled = false;
+        goBtn.disabled = false;
+        rechargeBtn.disabled = false;
+        if (smartBtn) smartBtn.disabled = false;
+        redeemBtn.disabled = false;
+        pauseBtn.disabled = true;
+        stopBtn.disabled = true;
+        pauseBtn.textContent = "Pause";
+      }
+    };
+
+    document.getElementById("ve-bulk-rebuild-vault").onclick = () => {
+      const saved = restoreCreatedBackup();
+      if (!saved || !saved.rows.length) {
+        // Also allow building from manual textarea usernames
+        const pasted = parseUsernameList(document.getElementById("ve-bulk-recharge-users").value);
+        if (!pasted.length) {
+          log("No saved create sheet or pasted usernames to rebuild vault.");
+          return;
+        }
+        const vault = upsertVaultFromUsernames(pasted, {
+          name: CFG.sheetName || "manual-list",
+          manager: CFG.managerHint || document.getElementById("ve-bulk-manager")?.value || "manager"
+        });
+        const st = vaultStats(vault);
+        log("Vault from paste: " + st.total + " → L1 " + st.list1Size + " / L2 " + st.list2Size);
+        downloadVaultHalves(vault);
+        refreshVaultUi();
+        return;
+      }
+      lastCreated = saved.rows.slice();
+      const vault = upsertVaultFromRows(saved.rows, {
+        name: saved.fileName || CFG.sheetName,
+        manager: CFG.managerHint,
+        accounts: saved.rows
+      });
+      const st = vaultStats(vault);
+      log("Vault rebuilt: " + vault.id + " · " + st.total + " → L1 " + st.list1Size + " / L2 " + st.list2Size);
+      downloadVaultHalves(vault);
+      refreshVaultUi();
+    };
+
+    document.getElementById("ve-bulk-dl-lists").onclick = () => {
+      const vault = getActiveVault();
+      if (!vault) { log("No active vault."); return; }
+      downloadVaultHalves(vault);
+      log("Downloaded list1 + list2 for " + vault.id);
+    };
+
+    document.getElementById("ve-bulk-reset-cursor").onclick = () => {
+      const vault = getActiveVault();
+      if (!vault) { log("No active vault."); return; }
+      const which = window.prompt("Reset cursor for list? Type 1, 2, or both", String(selectedListNo));
+      if (which === null) return;
+      const w = String(which).trim().toLowerCase();
+      if (w === "both" || w === "0") resetVaultCursor(vault.id, 0);
+      else if (w === "2") resetVaultCursor(vault.id, 2);
+      else resetVaultCursor(vault.id, 1);
+      log("Cursor reset for " + w);
+      refreshVaultUi();
+    };
+
+    refreshVaultUi();
+
 
     function setJobUi(state) {
       const running = state === "running" || state === "paused";
       goBtn.disabled = running;
       rechargeBtn.disabled = running;
+      if (typeof smartBtn !== "undefined" && smartBtn) smartBtn.disabled = running;
+      const scanBtn = document.getElementById("ve-bulk-scan-users");
+      if (scanBtn) scanBtn.disabled = running;
       redeemBtn.disabled = running;
       pauseBtn.disabled = !running;
       stopBtn.disabled = !running;
@@ -1265,6 +1853,21 @@
         if (created.length) {
           downloadSheet(created, CFG.password, CFG.balance);
           log("Final sheet downloaded.");
+          try {
+            const vault = upsertVaultFromRows(created, {
+              name: CFG.sheetName,
+              manager: CFG.managerHint,
+              accounts: created
+            });
+            const st = vaultStats(vault);
+            log("Vault built: " + vault.id + " · total " + st.total +
+              " → List1 " + st.list1Size + " / List2 " + st.list2Size);
+            downloadVaultHalves(vault);
+            log("Downloaded list1 + list2 CSV.");
+            if (typeof refreshVaultUi === "function") refreshVaultUi();
+          } catch (vaultErr) {
+            log("Vault build skipped: " + ((vaultErr && vaultErr.message) || vaultErr));
+          }
         }
         console.table(created.map((a) => ({
           name: a.name,
@@ -1369,6 +1972,210 @@
       if (!job) return;
       job.state = "stopped";
       log("Stop requested… finishing current step then exiting.");
+    };
+
+    async function runWalletAwareRechargeJob(entries, meta) {
+      const retriesEl = document.getElementById("ve-bulk-money-retries");
+      const retries = Math.min(8, Math.max(1, Number(retriesEl && retriesEl.value) || 3));
+      if (!entries.length) {
+        log("Nothing to recharge in this batch.");
+        return;
+      }
+      const results = [];
+      const timings = [];
+      const startedAt = Date.now();
+      let spent = 0;
+      job = {
+        state: "running",
+        kind: "recharge",
+        total: entries.length,
+        ok: 0,
+        fail: 0,
+        skipped: 0,
+        dups: 0,
+        done: 0
+      };
+      setJobUi("running");
+      sheetBtn.disabled = true;
+      log("Smart recharge: list " + (meta.listNo || "?") + " · " + entries.length + " accounts · amount " +
+        (meta.amount || "?") + " · wallet " + (meta.wallet || "?") + " · retries=" + retries);
+
+      try {
+        for (let i = 0; i < entries.length; i++) {
+          await waitIfPaused();
+          const { username, amount } = entries[i];
+          const tickStart = Date.now();
+          log((i + 1) + "/" + entries.length + "  " + username + " → " + amount);
+          try {
+            await withMoneyRetries(
+              () => rechargeOne(username, amount, log),
+              "recharge " + username,
+              log,
+              retries
+            );
+            results.push({ username, amount, status: "ok", at: new Date().toLocaleString() });
+            job.ok += 1;
+            spent += Number(amount) || 0;
+            if (meta.vaultId && meta.listNo) {
+              advanceVaultCursor(meta.vaultId, meta.listNo, 1);
+              refreshVaultUi();
+            }
+          } catch (err) {
+            if (err && err.message === "__STOP__") throw err;
+            const msg = (err && err.message) || String(err);
+            results.push({ username, amount, status: "failed", error: msg, at: new Date().toLocaleString() });
+            job.fail += 1;
+            log("Failed " + username + ": " + msg);
+            await escapeUi();
+            if (/admin balance|insufficient|disabled|cannot exceed/i.test(msg)) {
+              log("Wallet likely empty — stopping batch to protect remaining accounts.");
+              break;
+            }
+          }
+          timings.push(Date.now() - tickStart);
+          job.done = i + 1;
+          lastRecharges = results.slice();
+          sheetMode = "recharge";
+          sheetBtn.disabled = false;
+          renderStats({
+            kind: "recharge",
+            total: job.total,
+            done: job.done,
+            ok: job.ok,
+            fail: job.fail,
+            skipped: job.skipped,
+            dups: 0,
+            remaining: job.total - job.done,
+            avgMs: timings.reduce((a, b) => a + b, 0) / timings.length,
+            state: job.state
+          });
+          if (results.length && results.length % 25 === 0) {
+            downloadRechargeSheet(results);
+            log("Checkpoint CSV · " + results.length + " recharges");
+          }
+          await sleep(280);
+        }
+        log("Done. Spent ~" + spent + " · " + job.ok + " ok / " + job.fail + " fail · " + formatEta(Date.now() - startedAt));
+        if (results.length) {
+          downloadRechargeSheet(results);
+          log("Sheet downloaded: vegas-recharges-*.csv");
+        }
+        console.table(results);
+        job.state = "done";
+        setJobUi("done");
+        refreshVaultUi();
+      } catch (e) {
+        if (e && e.message === "__STOP__") {
+          log("Recharge stopped after " + job.ok + " successes.");
+          job.state = "stopped";
+        } else {
+          log("Recharge job error: " + ((e && e.message) || e));
+          job.state = "stopped";
+        }
+        if (results.length) {
+          lastRecharges = results.slice();
+          sheetBtn.disabled = false;
+          downloadRechargeSheet(results);
+        }
+        setJobUi(job.state);
+        refreshVaultUi();
+      } finally {
+        goBtn.disabled = false;
+        rechargeBtn.disabled = false;
+        if (smartBtn) smartBtn.disabled = false;
+        redeemBtn.disabled = false;
+        pauseBtn.disabled = true;
+        stopBtn.disabled = true;
+        pauseBtn.textContent = "Pause";
+      }
+    }
+
+    smartBtn.onclick = async () => {
+      if (job && (job.state === "running" || job.state === "paused")) {
+        log("Another job is running. Pause/Stop first.");
+        return;
+      }
+      let vault = getActiveVault();
+      if (!vault) {
+        const saved = restoreCreatedBackup();
+        if (saved && saved.rows.length) {
+          vault = upsertVaultFromRows(saved.rows, {
+            name: saved.fileName || CFG.sheetName,
+            manager: CFG.managerHint,
+            accounts: saved.rows
+          });
+          refreshVaultUi();
+          log("Auto-rebuilt vault from saved sheet.");
+        }
+      }
+      if (!vault) {
+        log("No vault. Create accounts first, or rebuild from saved sheet / paste usernames.");
+        return;
+      }
+
+      const st = vaultStats(vault);
+      const ask = window.prompt(
+        "Vault " + vault.id + "\\n" +
+        "List 1: " + st.list1Size + " (left " + st.list1Left + ")\\n" +
+        "List 2: " + st.list2Size + " (left " + st.list2Left + ")\\n\\n" +
+        "Kaunsi list recharge karni hai? Type 1 or 2",
+        String(selectedListNo)
+      );
+      if (ask === null) { log("Smart recharge cancelled."); return; }
+      const listNo = Number(String(ask).trim()) === 2 ? 2 : 1;
+      selectedListNo = listNo;
+      refreshVaultUi();
+
+      let amount = Math.max(0, Number(document.getElementById("ve-bulk-recharge-amount").value) || 0);
+      if (amount <= 0) {
+        const a = window.prompt("Har account pe kitna load?", "1");
+        if (a === null) return;
+        amount = Math.max(0, Number(a) || 0);
+        document.getElementById("ve-bulk-recharge-amount").value = String(amount || 1);
+      }
+      if (amount <= 0) { log("Invalid amount."); return; }
+
+      let wallet = Math.max(0, Number(document.getElementById("ve-bulk-wallet").value) || 0);
+      if (!(wallet > 0)) {
+        const w = window.prompt("Aapka available wallet/admin balance kitna hai?", "200");
+        if (w === null) return;
+        wallet = Math.max(0, Number(w) || 0);
+        document.getElementById("ve-bulk-wallet").value = String(wallet);
+      }
+      if (!(wallet > 0)) { log("Wallet balance required."); return; }
+
+      let plan;
+      try {
+        plan = planWalletAwareBatch(vault, listNo, amount, wallet);
+      } catch (err) {
+        log((err && err.message) || err);
+        return;
+      }
+
+      if (!plan.take) {
+        log("List " + listNo + " pe pending accounts khatam hain, ya wallet (" + wallet +
+          ") se amount " + amount + " cover nahi hota. Capacity=" + plan.capacity + ".");
+        return;
+      }
+
+      const ok = window.confirm(
+        "List " + listNo + " se " + plan.take + " accounts recharge?\\n" +
+        "Amount each: " + amount + "\\n" +
+        "Wallet: " + wallet + " → spend ~" + plan.spend + " · leftover ~" + plan.leftoverWallet + "\\n" +
+        "Pending after: " + plan.remainingAfter + "\\n\\nContinue?"
+      );
+      if (!ok) { log("Smart recharge cancelled."); return; }
+
+      goBtn.disabled = true;
+      rechargeBtn.disabled = true;
+      smartBtn.disabled = true;
+      redeemBtn.disabled = true;
+      await runWalletAwareRechargeJob(plan.batch, {
+        vaultId: plan.vaultId,
+        listNo: plan.listNo,
+        amount: plan.amount,
+        wallet: plan.wallet
+      });
     };
 
     document.getElementById("ve-bulk-recharge").onclick = async () => {
