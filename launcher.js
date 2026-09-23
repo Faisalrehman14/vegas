@@ -10,7 +10,9 @@
       digitLen: 4,
       uniquePasswords: false,
       checkpointEvery: 25,
-      maxRetries: 5
+      maxRetries: 5,
+      batchEvery: 10,
+      batchWaitSec: 10
     },
     window.__VE_BULK_CFG || {}
   );
@@ -204,13 +206,74 @@
     document.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true }));
   }
 
+  function dismissRuntimeErrorOverlay() {
+    // CRA / webpack "Uncaught runtime errors" overlay (often reCAPTCHA Timeout)
+    document.querySelectorAll("iframe#webpack-dev-server-client-overlay, iframe[id*='overlay']").forEach((el) => el.remove());
+    document.querySelectorAll("#webpack-dev-server-client-overlay").forEach((el) => el.remove());
+    [...document.querySelectorAll("body > div, body > iframe")].forEach((el) => {
+      if (el.id === "ve-bulk-root" || el.closest("#ve-bulk-root")) return;
+      const text = (el.innerText || el.textContent || "").slice(0, 2000);
+      if (/Uncaught runtime errors/i.test(text) && /reCAPTCHA|Timeout/i.test(text)) {
+        el.remove();
+      }
+    });
+    // Soft-hide any leftover full-screen blocker with that text
+    [...document.querySelectorAll("div")].forEach((el) => {
+      if (el.closest("#ve-bulk-root")) return;
+      const style = window.getComputedStyle(el);
+      if (style.position !== "fixed" && style.position !== "absolute") return;
+      const z = Number(style.zIndex) || 0;
+      if (z < 1000) return;
+      const text = (el.innerText || "").slice(0, 800);
+      if (/Uncaught runtime errors|reCAPTCHA Timeout/i.test(text)) {
+        el.style.setProperty("display", "none", "important");
+        el.style.setProperty("pointer-events", "none", "important");
+      }
+    });
+  }
+
+  function hasCaptchaOrRuntimeBlock() {
+    if (document.querySelector("iframe#webpack-dev-server-client-overlay, #webpack-dev-server-client-overlay")) return true;
+    const bodyText = (document.body && document.body.innerText) || "";
+    if (/Uncaught runtime errors[\s\S]{0,200}reCAPTCHA Timeout/i.test(bodyText.slice(0, 5000))) return true;
+    // Visible recaptcha challenge iframe (not just analytics)
+    const challenge = [...document.querySelectorAll("iframe[src*='recaptcha']")].some((f) => {
+      if (!isVisible(f)) return false;
+      const r = f.getBoundingClientRect();
+      return r.width > 200 && r.height > 100;
+    });
+    return challenge;
+  }
+
+  async function recoverFromUiBlockers(log) {
+    dismissRuntimeErrorOverlay();
+    if (!hasCaptchaOrRuntimeBlock()) return false;
+    if (log) log("⚠ reCAPTCHA / runtime overlay — clearing & waiting…");
+    dismissRuntimeErrorOverlay();
+    pressEscape();
+    await sleep(2000);
+    dismissRuntimeErrorOverlay();
+    // Give network/recaptcha time to settle before retrying UI actions
+    await sleep(8000);
+    dismissRuntimeErrorOverlay();
+    pressEscape();
+    await sleep(400);
+    dismissRuntimeErrorOverlay();
+    if (hasCaptchaOrRuntimeBlock() && log) {
+      log("⚠ Overlay still present — continue carefully / solve captcha if shown.");
+    }
+    return true;
+  }
+
   async function escapeUi() {
+    dismissRuntimeErrorOverlay();
     pressEscape();
     await sleep(120);
     dismissOpenDialogs();
     await sleep(180);
     pressEscape();
     await sleep(120);
+    dismissRuntimeErrorOverlay();
   }
 
   function findActiveDialog(titleRe) {
@@ -448,6 +511,7 @@
 
   async function searchUser(username, log) {
     log("searching " + username + " ...");
+    await recoverFromUiBlockers(log);
     await escapeUi();
 
     const clearBtn = [...document.querySelectorAll("button")].find((b) => {
@@ -721,21 +785,30 @@
 
   async function withMoneyRetries(fn, label, log, maxRetries = 3) {
     let lastErr = null;
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const tries = Math.max(maxRetries, 4);
+    for (let attempt = 0; attempt < tries; attempt++) {
       try {
+        await recoverFromUiBlockers(log);
         if (attempt > 0) {
-          log(label + " retry " + (attempt + 1) + "/" + maxRetries);
+          log(label + " retry " + (attempt + 1) + "/" + tries);
           await escapeUi();
-          await sleep(600 + attempt * 400);
+          const captchaBackoff = /recaptcha|timeout|overlay|confirm missing|search box|timed out/i.test(
+            (lastErr && lastErr.message) || ""
+          );
+          await sleep((captchaBackoff ? 2500 : 600) + attempt * (captchaBackoff ? 1500 : 400));
+          await recoverFromUiBlockers(log);
         }
         return await fn();
       } catch (err) {
         lastErr = err;
         const msg = (err && err.message) || String(err);
-        if (/admin balance|insufficient|invalid recharge amount/i.test(msg) && !/timed out|not found|Actions|Confirm|Search/i.test(msg)) {
+        if (/admin balance|insufficient|invalid recharge amount/i.test(msg) && !/timed out|not found|Actions|Confirm|Search|recaptcha/i.test(msg)) {
           break;
         }
         await escapeUi();
+        if (/recaptcha|timeout/i.test(msg) || hasCaptchaOrRuntimeBlock()) {
+          await recoverFromUiBlockers(log);
+        }
       }
     }
     throw lastErr || new Error(label + " failed");
@@ -1234,6 +1307,34 @@
     URL.revokeObjectURL(url);
   }
 
+  function downloadHybridSheet(rows) {
+    const header = ["#", "RedeemFrom", "Redeemed", "RedeemStatus", "RechargeTo", "Recharged", "RechargeStatus", "At"];
+    const lines = [header.join(",")];
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    rows.forEach((a, i) => {
+      const cells = [
+        i + 1,
+        a.redeemFrom || "",
+        a.redeemed || 0,
+        a.redeemStatus || (a.redeemSkipped ? "skipped" : (a.redeemError || "ok")),
+        a.rechargeTo || "",
+        a.recharged || 0,
+        a.rechargeStatus || "not-needed",
+        a.at || stamp
+      ].map((v) => `"${String(v).replace(/"/g, '""')}"`);
+      lines.push(cells.join(","));
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vegas-hybrid-${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function downloadRechargeSheet(rows) {
     const header = ["#", "Username", "Amount", "Status", "At"];
     const lines = [header.join(",")];
@@ -1329,7 +1430,7 @@
         #ve-bulk-card { background:#14141c; color:#f4f1ea; border:1px solid rgba(245,197,24,.28); border-radius:14px; padding:12px; box-shadow:0 20px 60px rgba(0,0,0,.45); max-height:min(96vh, 720px); overflow:auto; }
         #ve-bulk-card h3 { margin:0 0 4px; font-size:15px; color:#f5c518; }
         #ve-bulk-card p { margin:0 0 8px; font-size:11px; color:#9a9488; line-height:1.4; }
-        #ve-bulk-tabs { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; margin-bottom:8px; }
+        #ve-bulk-tabs { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; margin-bottom:8px; }
         #ve-bulk-tabs button { border:1px solid rgba(245,197,24,.28); background:#0e0e14; color:#9a9488; border-radius:8px; padding:7px; font-weight:700; cursor:pointer; font-size:12px; }
         #ve-bulk-tabs button.active { background:#f5c518; color:#111; border-color:#f5c518; }
         #ve-bulk-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
@@ -1345,9 +1446,9 @@
         #ve-stats { margin-top:6px; font:11px ui-monospace,monospace; color:#9a9488; line-height:1.45; }
         #ve-job-row { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:7px; }
         #ve-bulk-log { height:110px; overflow:auto; background:#0e0e14; border-radius:8px; padding:8px; font:11px ui-monospace,monospace; white-space:pre-wrap; margin-top:8px; }
-        #ve-bulk-go, #ve-bulk-recharge, #ve-bulk-redeem, #ve-bulk-sheet, #ve-bulk-x, #ve-bulk-pause, #ve-bulk-stop { width:100%; border:0; border-radius:9px; padding:9px; font-weight:700; cursor:pointer; margin-top:7px; }
-        #ve-bulk-go, #ve-bulk-recharge, #ve-bulk-redeem { background:#f5c518; color:#111; }
-        #ve-bulk-go:disabled, #ve-bulk-recharge:disabled, #ve-bulk-redeem:disabled, #ve-bulk-pause:disabled, #ve-bulk-stop:disabled { opacity:.55; cursor:wait; }
+        #ve-bulk-go, #ve-bulk-recharge, #ve-bulk-redeem, #ve-bulk-hybrid, #ve-bulk-sheet, #ve-bulk-x, #ve-bulk-pause, #ve-bulk-stop { width:100%; border:0; border-radius:9px; padding:9px; font-weight:700; cursor:pointer; margin-top:7px; }
+        #ve-bulk-go, #ve-bulk-recharge, #ve-bulk-redeem, #ve-bulk-hybrid { background:#f5c518; color:#111; }
+        #ve-bulk-go:disabled, #ve-bulk-recharge:disabled, #ve-bulk-redeem:disabled, #ve-bulk-hybrid:disabled, #ve-bulk-pause:disabled, #ve-bulk-stop:disabled { opacity:.55; cursor:wait; }
         #ve-bulk-pause { background:#1c1c28; color:#f5c518; border:1px solid rgba(245,197,24,.28); margin-top:0; }
         #ve-bulk-stop { background:#2a1515; color:#ff8e8e; border:1px solid rgba(255,100,100,.28); margin-top:0; }
         #ve-bulk-sheet { background:#1c1c28; color:#f5c518; border:1px solid rgba(245,197,24,.28); }
@@ -1360,19 +1461,21 @@
         #ve-list-pick { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
         #ve-list-pick button { border:1px solid rgba(245,197,24,.28); background:#14141c; color:#f4f1ea; border-radius:8px; padding:10px 8px; font-weight:700; cursor:pointer; font-size:12px; }
         #ve-list-pick button.active { background:#f5c518; color:#111; }
-        #ve-bulk-smart, #ve-bulk-scan-users, #ve-bulk-rebuild-vault, #ve-bulk-reset-cursor, #ve-bulk-dl-lists { width:100%; border:0; border-radius:9px; padding:9px; font-weight:700; cursor:pointer; margin-top:7px; }
+        #ve-bulk-smart, #ve-bulk-scan-users, #ve-bulk-rebuild-vault, #ve-bulk-reset-cursor, #ve-bulk-dl-lists, #ve-hybrid-load-vault, #ve-hybrid-swap { width:100%; border:0; border-radius:9px; padding:9px; font-weight:700; cursor:pointer; margin-top:7px; }
         #ve-bulk-smart { background:#f5c518; color:#111; }
         #ve-bulk-scan-users { background:#1a2a1a; color:#7dffb3; border:1px solid rgba(125,255,179,.35); }
-        #ve-bulk-rebuild-vault, #ve-bulk-reset-cursor, #ve-bulk-dl-lists { background:#1c1c28; color:#f5c518; border:1px solid rgba(245,197,24,.28); }
+        #ve-bulk-rebuild-vault, #ve-bulk-reset-cursor, #ve-bulk-dl-lists, #ve-hybrid-load-vault, #ve-hybrid-swap { background:#1c1c28; color:#f5c518; border:1px solid rgba(245,197,24,.28); }
+        #ve-hybrid-hint { font-size:11px; color:#9a9488; line-height:1.4; margin:6px 0 8px; }
         #ve-manual-wrap { margin-top:10px; border-top:1px dashed rgba(245,197,24,.18); padding-top:8px; }
       </style>
       <div id="ve-bulk-card">
         <h3>Vegas Admin Helper</h3>
-        <p>Create → auto-split List1/List2 · wallet-aware recharge · redeem.</p>
+        <p>Create · recharge · redeem · hybrid (A redeem → B recharge).</p>
         <div id="ve-bulk-tabs">
           <button type="button" id="ve-tab-create" class="active">Create</button>
-          <button type="button" id="ve-tab-recharge">Recharge list</button>
-          <button type="button" id="ve-tab-redeem">Redeem list</button>
+          <button type="button" id="ve-tab-recharge">Recharge</button>
+          <button type="button" id="ve-tab-redeem">Redeem</button>
+          <button type="button" id="ve-tab-hybrid">Hybrid</button>
         </div>
         <div id="ve-pane-create" class="ve-pane active">
           <div id="ve-bulk-row">
@@ -1432,6 +1535,16 @@
             </div>
             <div></div>
           </div>
+          <div id="ve-bulk-row" style="margin-top:8px">
+            <div>
+              <label>Pause every N accounts</label>
+              <input id="ve-bulk-batch-every" type="number" min="1" max="100" value="10" />
+            </div>
+            <div>
+              <label>Wait seconds</label>
+              <input id="ve-bulk-batch-wait" type="number" min="0" max="300" value="10" />
+            </div>
+          </div>
           <button id="ve-bulk-smart">Smart recharge (ask list 1/2)</button>
           <button id="ve-bulk-scan-users" type="button">Scan existing accounts → build List 1/2</button>
           <button id="ve-bulk-rebuild-vault" type="button">Rebuild vault from saved create sheet</button>
@@ -1457,7 +1570,51 @@
               <input id="ve-bulk-redeem-retries" type="number" min="1" max="8" value="3" />
             </div>
           </div>
+          <div id="ve-bulk-row" style="margin-top:8px">
+            <div>
+              <label>Pause every N accounts</label>
+              <input id="ve-bulk-redeem-batch-every" type="number" min="1" max="100" value="10" />
+            </div>
+            <div>
+              <label>Wait seconds</label>
+              <input id="ve-bulk-redeem-batch-wait" type="number" min="0" max="300" value="10" />
+            </div>
+          </div>
           <button id="ve-bulk-redeem">Start redeem job</button>
+        </div>
+        <div id="ve-pane-hybrid" class="ve-pane">
+          <p id="ve-hybrid-hint">Redeem from List A → recharge into List B (paired by row). Same account auto-recharge nahi.</p>
+          <label>List A — Redeem FROM</label>
+          <textarea id="ve-hybrid-a" placeholder="source1&#10;source2&#10;source3"></textarea>
+          <label style="margin-top:8px">List B — Recharge TO</label>
+          <textarea id="ve-hybrid-b" placeholder="target1&#10;target2&#10;target3"></textarea>
+          <button type="button" id="ve-hybrid-load-vault">Load vault: List1→A · List2→B</button>
+          <button type="button" id="ve-hybrid-swap">Swap A ↔ B</button>
+          <label class="ve-check" style="margin-top:8px">
+            <input id="ve-hybrid-mirror" type="checkbox" checked />
+            Recharge amount = redeemed amount (mirror)
+          </label>
+          <div id="ve-bulk-row" style="margin-top:8px">
+            <div>
+              <label>Fixed recharge (if mirror off)</label>
+              <input id="ve-hybrid-fixed" type="number" min="0.01" step="0.01" value="1" />
+            </div>
+            <div>
+              <label>Retries each</label>
+              <input id="ve-hybrid-retries" type="number" min="1" max="8" value="3" />
+            </div>
+          </div>
+          <div id="ve-bulk-row" style="margin-top:8px">
+            <div>
+              <label>Pause every N pairs</label>
+              <input id="ve-hybrid-batch-every" type="number" min="1" max="100" value="10" />
+            </div>
+            <div>
+              <label>Wait seconds</label>
+              <input id="ve-hybrid-batch-wait" type="number" min="0" max="300" value="10" />
+            </div>
+          </div>
+          <button id="ve-bulk-hybrid">Start hybrid job</button>
         </div>
         <div id="ve-job-row">
           <button id="ve-bulk-pause" disabled>Pause</button>
@@ -1485,6 +1642,7 @@
     let lastCreated = [];
     let lastRecharges = [];
     let lastRedeems = [];
+    let lastHybrids = [];
     let sheetMode = "create";
     let job = null;
 
@@ -1498,16 +1656,19 @@
       document.getElementById("ve-tab-create").classList.toggle("active", tab === "create");
       document.getElementById("ve-tab-recharge").classList.toggle("active", tab === "recharge");
       document.getElementById("ve-tab-redeem").classList.toggle("active", tab === "redeem");
+      document.getElementById("ve-tab-hybrid").classList.toggle("active", tab === "hybrid");
       document.getElementById("ve-pane-create").classList.toggle("active", tab === "create");
       document.getElementById("ve-pane-recharge").classList.toggle("active", tab === "recharge");
       document.getElementById("ve-pane-redeem").classList.toggle("active", tab === "redeem");
+      document.getElementById("ve-pane-hybrid").classList.toggle("active", tab === "hybrid");
       sheetMode = tab;
       if (tab === "create") sheetBtn.disabled = !lastCreated.length;
       else if (tab === "recharge") {
         sheetBtn.disabled = !lastRecharges.length;
         if (typeof refreshVaultUi === "function") refreshVaultUi();
-      }
-      else sheetBtn.disabled = !lastRedeems.length;
+      } else if (tab === "redeem") sheetBtn.disabled = !lastRedeems.length;
+      else if (tab === "hybrid") sheetBtn.disabled = !lastHybrids.length;
+      else sheetBtn.disabled = true;
     };
 
     function readCreateCfg() {
@@ -1523,6 +1684,7 @@
 
     const rechargeBtn = document.getElementById("ve-bulk-recharge");
     const redeemBtn = document.getElementById("ve-bulk-redeem");
+    const hybridBtn = document.getElementById("ve-bulk-hybrid");
     const smartBtn = document.getElementById("ve-bulk-smart");
     let selectedListNo = 1;
 
@@ -1565,6 +1727,7 @@
       rechargeBtn.disabled = true;
       if (smartBtn) smartBtn.disabled = true;
       redeemBtn.disabled = true;
+      if (hybridBtn) hybridBtn.disabled = true;
       job = { state: "running", kind: "scan", total: 1, ok: 0, fail: 0, skipped: 0, dups: 0, done: 0 };
       setJobUi("running");
       progressWrap.classList.add("on");
@@ -1618,6 +1781,7 @@
         rechargeBtn.disabled = false;
         if (smartBtn) smartBtn.disabled = false;
         redeemBtn.disabled = false;
+        if (hybridBtn) hybridBtn.disabled = false;
         pauseBtn.disabled = true;
         stopBtn.disabled = true;
         pauseBtn.textContent = "Pause";
@@ -1686,6 +1850,7 @@
       const scanBtn = document.getElementById("ve-bulk-scan-users");
       if (scanBtn) scanBtn.disabled = running;
       redeemBtn.disabled = running;
+      if (hybridBtn) hybridBtn.disabled = running;
       pauseBtn.disabled = !running;
       stopBtn.disabled = !running;
       pauseBtn.textContent = state === "paused" ? "Resume" : "Pause";
@@ -1714,6 +1879,44 @@
       }
       if (!job || job.state === "stopped") throw new Error("__STOP__");
     }
+
+    function readBatchPace(kind) {
+      let everyEl;
+      let waitEl;
+      if (kind === "redeem") {
+        everyEl = document.getElementById("ve-bulk-redeem-batch-every");
+        waitEl = document.getElementById("ve-bulk-redeem-batch-wait");
+      } else if (kind === "hybrid") {
+        everyEl = document.getElementById("ve-hybrid-batch-every");
+        waitEl = document.getElementById("ve-hybrid-batch-wait");
+      } else {
+        everyEl = document.getElementById("ve-bulk-batch-every");
+        waitEl = document.getElementById("ve-bulk-batch-wait");
+      }
+      return {
+        every: Math.min(100, Math.max(1, Number(everyEl && everyEl.value) || CFG.batchEvery || 10)),
+        waitSec: Math.min(300, Math.max(0, Number(waitEl && waitEl.value) || CFG.batchWaitSec || 10))
+      };
+    }
+
+    async function awaitBatchCooldown(doneCount, total, log, kind) {
+      const pace = readBatchPace(kind || "recharge");
+      if (!pace.waitSec || !pace.every) return;
+      if (doneCount <= 0 || doneCount >= total) return;
+      if (doneCount % pace.every !== 0) return;
+      log("⏸ Batch pause after " + doneCount + " accounts — waiting " + pace.waitSec + "s…");
+      const end = Date.now() + pace.waitSec * 1000;
+      while (Date.now() < end) {
+        await waitIfPaused();
+        dismissRuntimeErrorOverlay();
+        const left = end - Date.now();
+        if (left <= 0) break;
+        await sleep(Math.min(250, left));
+      }
+      await recoverFromUiBlockers(log);
+      log("▶ Batch pause done — next " + pace.every + " accounts…");
+    }
+
 
     async function runCreateJob() {
       readCreateCfg();
@@ -1909,6 +2112,7 @@
         goBtn.disabled = false;
         rechargeBtn.disabled = false;
         redeemBtn.disabled = false;
+        if (hybridBtn) hybridBtn.disabled = false;
         pauseBtn.disabled = true;
         stopBtn.disabled = true;
         pauseBtn.textContent = "Pause";
@@ -1918,6 +2122,7 @@
     document.getElementById("ve-tab-create").onclick = () => setTab("create");
     document.getElementById("ve-tab-recharge").onclick = () => setTab("recharge");
     document.getElementById("ve-tab-redeem").onclick = () => setTab("redeem");
+    document.getElementById("ve-tab-hybrid").onclick = () => setTab("hybrid");
     document.getElementById("ve-bulk-x").onclick = () => root.remove();
 
     sheetBtn.onclick = () => {
@@ -1931,6 +2136,12 @@
         if (!lastRedeems.length) return;
         downloadRedeemSheet(lastRedeems);
         log("Redeem sheet downloaded.");
+        return;
+      }
+      if (sheetMode === "hybrid") {
+        if (!lastHybrids.length) return;
+        downloadHybridSheet(lastHybrids);
+        log("Hybrid sheet downloaded.");
         return;
       }
       if (!lastCreated.length) return;
@@ -1997,8 +2208,10 @@
       };
       setJobUi("running");
       sheetBtn.disabled = true;
+      const pace = readBatchPace("recharge");
       log("Smart recharge: list " + (meta.listNo || "?") + " · " + entries.length + " accounts · amount " +
-        (meta.amount || "?") + " · wallet " + (meta.wallet || "?") + " · retries=" + retries);
+        (meta.amount || "?") + " · wallet " + (meta.wallet || "?") + " · retries=" + retries +
+        " · pause every " + pace.every + " / " + pace.waitSec + "s");
 
       try {
         for (let i = 0; i < entries.length; i++) {
@@ -2054,6 +2267,7 @@
             log("Checkpoint CSV · " + results.length + " recharges");
           }
           await sleep(280);
+          await awaitBatchCooldown(job.done, entries.length, log, "recharge");
         }
         log("Done. Spent ~" + spent + " · " + job.ok + " ok / " + job.fail + " fail · " + formatEta(Date.now() - startedAt));
         if (results.length) {
@@ -2084,6 +2298,7 @@
         rechargeBtn.disabled = false;
         if (smartBtn) smartBtn.disabled = false;
         redeemBtn.disabled = false;
+        if (hybridBtn) hybridBtn.disabled = false;
         pauseBtn.disabled = true;
         stopBtn.disabled = true;
         pauseBtn.textContent = "Pause";
@@ -2170,6 +2385,7 @@
       rechargeBtn.disabled = true;
       smartBtn.disabled = true;
       redeemBtn.disabled = true;
+      if (hybridBtn) hybridBtn.disabled = true;
       await runWalletAwareRechargeJob(plan.batch, {
         vaultId: plan.vaultId,
         listNo: plan.listNo,
@@ -2207,7 +2423,9 @@
       };
       setJobUi("running");
       sheetBtn.disabled = true;
-      log("Recharge job: " + entries.length + " users · retries=" + retries);
+      const pace = readBatchPace("recharge");
+      log("Recharge job: " + entries.length + " users · retries=" + retries +
+        " · pause every " + pace.every + " / " + pace.waitSec + "s");
 
       try {
         for (let i = 0; i < entries.length; i++) {
@@ -2264,6 +2482,7 @@
             log("Checkpoint CSV · " + results.length + " recharges");
           }
           await sleep(280);
+          await awaitBatchCooldown(job.done, entries.length, log, "recharge");
         }
         const okTotal = results.filter((r) => r.status === "ok").reduce((s, r) => s + (Number(r.amount) || 0), 0);
         log("Done. Recharged " + okTotal + " · " + job.ok + " ok / " + job.fail + " fail · " + formatEta(Date.now() - startedAt));
@@ -2290,6 +2509,7 @@
         goBtn.disabled = false;
         rechargeBtn.disabled = false;
         redeemBtn.disabled = false;
+        if (hybridBtn) hybridBtn.disabled = false;
         pauseBtn.disabled = true;
         stopBtn.disabled = true;
         pauseBtn.textContent = "Pause";
@@ -2343,8 +2563,10 @@
       };
       setJobUi("running");
       sheetBtn.disabled = true;
+      const pace = readBatchPace("redeem");
       log("Redeem job: " + users.length + " users · retries=" + retries +
-        (autoRechargeEnabled ? (" · auto-recharge +" + autoRechargeAmount) : ""));
+        (autoRechargeEnabled ? (" · auto-recharge +" + autoRechargeAmount) : "") +
+        " · pause every " + pace.every + " / " + pace.waitSec + "s");
 
       try {
         for (let i = 0; i < users.length; i++) {
@@ -2429,6 +2651,7 @@
             log("Checkpoint CSV · " + results.length + " redeems");
           }
           await sleep(280);
+          await awaitBatchCooldown(job.done, users.length, log, "redeem");
         }
         const total = results.reduce((s, r) => s + (Number(r.redeemed) || 0), 0);
         const rechargedTotal = results.reduce((s, r) => s + (Number(r.recharged) || 0), 0);
@@ -2457,11 +2680,223 @@
         goBtn.disabled = false;
         rechargeBtn.disabled = false;
         redeemBtn.disabled = false;
+        if (hybridBtn) hybridBtn.disabled = false;
         pauseBtn.disabled = true;
         stopBtn.disabled = true;
         pauseBtn.textContent = "Pause";
       }
     };
+
+    document.getElementById("ve-hybrid-load-vault").onclick = () => {
+      const vault = getActiveVault();
+      if (!vault) {
+        log("No vault. Scan or rebuild first.");
+        return;
+      }
+      document.getElementById("ve-hybrid-a").value = (vault.list1 || []).join("\n");
+      document.getElementById("ve-hybrid-b").value = (vault.list2 || []).join("\n");
+      log("Hybrid loaded vault " + vault.id + " · A=" + (vault.list1 || []).length + " · B=" + (vault.list2 || []).length);
+    };
+
+    document.getElementById("ve-hybrid-swap").onclick = () => {
+      const a = document.getElementById("ve-hybrid-a");
+      const b = document.getElementById("ve-hybrid-b");
+      const tmp = a.value;
+      a.value = b.value;
+      b.value = tmp;
+      log("Hybrid lists swapped A ↔ B.");
+    };
+
+    hybridBtn.onclick = async () => {
+      if (job && (job.state === "running" || job.state === "paused")) {
+        log("Another job is running. Pause/Stop first.");
+        return;
+      }
+      const listA = parseUsernameList(document.getElementById("ve-hybrid-a").value);
+      const listB = parseUsernameList(document.getElementById("ve-hybrid-b").value);
+      const mirror = document.getElementById("ve-hybrid-mirror").checked;
+      const fixedAmount = Math.max(0, Number(document.getElementById("ve-hybrid-fixed").value) || 0);
+      const retries = Math.min(8, Math.max(1, Number(document.getElementById("ve-hybrid-retries").value) || 3));
+      const pace = readBatchPace("hybrid");
+
+      if (!listA.length || !listB.length) {
+        log("Hybrid needs both lists: A (redeem from) and B (recharge to).");
+        return;
+      }
+      if (!mirror && fixedAmount <= 0) {
+        log("Mirror off — fixed recharge amount > 0 chahiye.");
+        return;
+      }
+
+      const pairCount = Math.min(listA.length, listB.length);
+      if (listA.length !== listB.length) {
+        log("Warning: A=" + listA.length + " B=" + listB.length + " → pairing first " + pairCount + " rows.");
+      }
+
+      const samePairs = [];
+      for (let i = 0; i < pairCount; i++) {
+        if (String(listA[i]).toLowerCase() === String(listB[i]).toLowerCase()) samePairs.push(listA[i]);
+      }
+      if (samePairs.length) {
+        const go = window.confirm(
+          samePairs.length + " pairs mein SAME username hai.\\nContinue anyway?\\n\\n" + samePairs.slice(0, 5).join(", ")
+        );
+        if (!go) return;
+      }
+
+      const ok = window.confirm(
+        "Hybrid job\\nPairs: " + pairCount + "\\nRedeem A → Recharge B\\nAmount: " +
+        (mirror ? "mirrored" : ("fixed " + fixedAmount)) + "\\nPause every " + pace.every + " / " + pace.waitSec + "s\\n\\nStart?"
+      );
+      if (!ok) return;
+
+      const results = [];
+      const timings = [];
+      const startedAt = Date.now();
+      let redeemedTotal = 0;
+      let rechargedTotal = 0;
+      job = {
+        state: "running",
+        kind: "hybrid",
+        total: pairCount,
+        ok: 0,
+        fail: 0,
+        skipped: 0,
+        dups: 0,
+        done: 0
+      };
+      setJobUi("running");
+      sheetBtn.disabled = true;
+      log("Hybrid start: " + pairCount + " pairs · " + (mirror ? "mirror" : ("fixed +" + fixedAmount)) +
+        " · retries=" + retries + " · pause every " + pace.every + " / " + pace.waitSec + "s");
+
+      try {
+        for (let i = 0; i < pairCount; i++) {
+          await waitIfPaused();
+          const fromUser = listA[i];
+          const toUser = listB[i];
+          const tickStart = Date.now();
+          const row = {
+            redeemFrom: fromUser,
+            rechargeTo: toUser,
+            redeemed: 0,
+            recharged: 0,
+            redeemSkipped: false,
+            redeemStatus: "pending",
+            rechargeStatus: "pending",
+            at: new Date().toLocaleString()
+          };
+          log((i + 1) + "/" + pairCount + "  redeem " + fromUser + " → recharge " + toUser);
+
+          try {
+            const r = await withMoneyRetries(
+              () => redeemOne(fromUser, log),
+              "hybrid-redeem " + fromUser,
+              log,
+              retries
+            );
+            if (r.skipped || !(Number(r.redeemed) > 0)) {
+              row.redeemSkipped = true;
+              row.redeemStatus = "skipped";
+              row.redeemed = Number(r.redeemed) || 0;
+              row.rechargeStatus = "skipped-no-redeem";
+              job.skipped += 1;
+              log("Skip pair: " + fromUser + " empty redeem — skip recharge " + toUser);
+            } else {
+              row.redeemed = Number(r.redeemed) || 0;
+              row.redeemStatus = "ok";
+              redeemedTotal += row.redeemed;
+              const pay = mirror ? row.redeemed : fixedAmount;
+              try {
+                await withMoneyRetries(
+                  () => rechargeOne(toUser, pay, log),
+                  "hybrid-recharge " + toUser,
+                  log,
+                  retries
+                );
+                row.recharged = pay;
+                row.rechargeStatus = "ok";
+                rechargedTotal += pay;
+                job.ok += 1;
+                log("✓ " + fromUser + " -" + row.redeemed + " → " + toUser + " +" + pay);
+              } catch (reErr) {
+                if (reErr && reErr.message === "__STOP__") throw reErr;
+                row.rechargeStatus = "failed";
+                row.rechargeError = (reErr && reErr.message) || String(reErr);
+                job.fail += 1;
+                log("Redeem OK, recharge failed " + toUser + ": " + row.rechargeError);
+                await escapeUi();
+              }
+            }
+          } catch (err) {
+            if (err && err.message === "__STOP__") throw err;
+            row.redeemStatus = "failed";
+            row.redeemError = (err && err.message) || String(err);
+            row.rechargeStatus = "skipped-redeem-failed";
+            job.fail += 1;
+            log("Redeem failed " + fromUser + ": " + row.redeemError);
+            await escapeUi();
+          }
+
+          results.push(row);
+          timings.push(Date.now() - tickStart);
+          job.done = i + 1;
+          lastHybrids = results.slice();
+          sheetMode = "hybrid";
+          sheetBtn.disabled = false;
+          renderStats({
+            kind: "hybrid",
+            total: job.total,
+            done: job.done,
+            ok: job.ok,
+            fail: job.fail,
+            skipped: job.skipped,
+            dups: 0,
+            remaining: job.total - job.done,
+            avgMs: timings.reduce((a, b) => a + b, 0) / timings.length,
+            state: job.state
+          });
+          if (results.length % 25 === 0) {
+            downloadHybridSheet(results);
+            log("Checkpoint CSV · " + results.length + " hybrid pairs");
+          }
+          await sleep(280);
+          await awaitBatchCooldown(job.done, pairCount, log, "hybrid");
+        }
+
+        log("Hybrid done. Redeemed " + redeemedTotal + " · recharged " + rechargedTotal +
+          " · " + job.ok + " ok / " + job.skipped + " skip / " + job.fail + " fail · " + formatEta(Date.now() - startedAt));
+        downloadHybridSheet(results);
+        log("Sheet downloaded: vegas-hybrid-*.csv");
+        console.table(results);
+        job.state = "done";
+        setJobUi("done");
+      } catch (e) {
+        if (e && e.message === "__STOP__") {
+          log("Hybrid stopped after " + job.ok + " ok pairs.");
+          job.state = "stopped";
+        } else {
+          log("Hybrid job error: " + ((e && e.message) || e));
+          job.state = "stopped";
+        }
+        if (results.length) {
+          lastHybrids = results.slice();
+          sheetBtn.disabled = false;
+          downloadHybridSheet(results);
+        }
+        setJobUi(job.state);
+      } finally {
+        goBtn.disabled = false;
+        rechargeBtn.disabled = false;
+        if (smartBtn) smartBtn.disabled = false;
+        redeemBtn.disabled = false;
+        if (hybridBtn) hybridBtn.disabled = false;
+        pauseBtn.disabled = true;
+        stopBtn.disabled = true;
+        pauseBtn.textContent = "Pause";
+      }
+    };
+
   }
 
   mount();
